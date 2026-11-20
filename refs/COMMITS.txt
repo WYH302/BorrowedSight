@@ -1,0 +1,6 @@
+shallow clone --depth 1; do not install these environments
+CoHFF 14cd3c9dbd7f0d2623bb57eb76dd78ba2bf80a23 https://github.com/rruisong/CoHFF.git
+OpenCOOD 31ba16025da27ffe4e336f011290dfbc66f9a1f1 https://github.com/DerrickXuNu/OpenCOOD.git
+VQSOP ef1970fb89f47276869f6f1ce418822e7642fb72 https://github.com/cheerfulli/VQSOP.git
+LiDARWeather 034bd2b88b703a45427b3a9bf8aed99f00196ccc https://github.com/engineerJPark/LiDARWeather.git
+LISA ce06a7fbf2d0c9c4ad35d9dad55a79dfa8d5d7d4 https://github.com/velatkilic/LISA.git
