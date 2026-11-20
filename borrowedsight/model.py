@@ -102,22 +102,28 @@ class BorrowedSight(nn.Module):
         extra[:, 6] = move[:, 1] / 20.0
         nonempty = torch.zeros(batch, dtype=torch.bool, device=device)
         for b, items in enumerate(placed):
-            if not items:
-                continue
-            nonempty[b] = True
             for item in items:
+                if not _item_has_evidence(item):
+                    continue
+                nonempty[b] = True
                 self._paint(feat[b], weight[b], extra[b], item)
         feat = feat / weight.unsqueeze(1).clamp(min=1.0e-6)
         pred = self.decoder(feat, extra)
         return _force_unknown_where(pred, torch.logical_not(nonempty))
 
-    def transmit(self, cached: dict, ego_pose, receiver_id: int, n_tokens: int, stage: int = 1) -> dict:
+    def transmit(self, cached: dict, ego_pose, receiver_id: int, n_tokens: int, stage: int = 1, budget=None) -> dict:
         """Build one real packet from cached sender features. `recon` matches the bytes."""
         fused = self.fuse(torch.cat((cached["feats"], cached["geo"]), dim=-1))
         logits = self.score(fused).squeeze(-1)
         classes = cached["pred_class"].long()
         usable = classes > 0
         logits = torch.where(usable, logits, torch.full_like(logits, -1.0e4))
+        pad_slots = None
+        tail_bytes = 0
+        if budget is not None and self.method != "B0":
+            pad_slots = int(budget["n_tokens"])
+            tail_bytes = int(budget["tail"])
+            n_tokens = pad_slots
         if self.method == "B1":
             salience = torch.where(usable, cached["geo"][:, 0].detach(), torch.full_like(logits, -1.0e4))
             chosen = topk_indices(salience, n_tokens)
@@ -134,8 +140,13 @@ class BorrowedSight(nn.Module):
         conf = torch.sigmoid(logits[chosen].detach()).clamp(0, 1) if chosen.numel() else fused.new_zeros(0)
         envelope = cached.get("envelope") if self.method == "B4" else None
         blob = b""
-        if self.method != "B0" and wire.numel() > 0:
-            payload = _numpy_payload(self.method, wire.detach(), code, class_k.detach(), conf, stage)
+        if self.method != "B0" and (wire.numel() > 0 or pad_slots):
+            if wire.numel() > 0:
+                payload = _numpy_payload(self.method, wire.detach(), code, class_k.detach(), conf, stage)
+                coords_np = coords.detach().cpu().numpy()
+            else:
+                payload = {}
+                coords_np = np.zeros((0, 3), dtype=np.int64)
             blob = encode_packet(
                 self.method,
                 int(cached["sender_id"]),
@@ -144,10 +155,12 @@ class BorrowedSight(nn.Module):
                 cached["pose"],
                 float(cached["speed"]),
                 float(cached["yaw_rate"]),
-                coords.detach().cpu().numpy(),
+                coords_np,
                 payload,
                 None if envelope is None else np.asarray(envelope, dtype=np.uint8),
                 stage=stage,
+                pad_slots=pad_slots,
+                tail_bytes=tail_bytes,
             )
         return {
             "blob": blob,
@@ -308,6 +321,17 @@ class BorrowedSight(nn.Module):
         if item.get("envelope") is not None and np.asarray(item["envelope"]).size == 400:
             free = free * extra[0]
         extra[3] = torch.maximum(extra[3], free)
+
+
+def _item_has_evidence(item) -> bool:
+    """Padding-only packets are not anchors and not free-space evidence."""
+    coords = item.get("coords_ego")
+    if torch.is_tensor(coords) and coords.numel() > 0:
+        return True
+    envelope = item.get("envelope")
+    if envelope is None:
+        return False
+    return int(np.asarray(envelope).size) == 400
 
 
 def voxel_centers_from_idx(idx: torch.Tensor) -> torch.Tensor:

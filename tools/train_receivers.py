@@ -15,7 +15,7 @@ from borrowedsight.data import Mini200, loss_targets
 from borrowedsight.labels import GROUND, IGNORE_INDEX, THINGS, VERTICAL
 from borrowedsight.metrics import finalize_counts, new_counts, update_counts
 from borrowedsight.model import BorrowedSight, score_bce
-from borrowedsight.packer import TARGET_BYTES, budget_for, nbytes_for_count
+from borrowedsight.packer import FAIR_BUDGET_BYTES, packet_layout
 from borrowedsight.paths import CACHE_CLEAR, CHECKPOINTS, CONFIGS, OUTPUTS
 from borrowedsight.registry import log_run
 
@@ -65,13 +65,21 @@ def preload(dataset: Mini200) -> dict:
     return items
 
 
-def step_loss(model, sample, senders, n_tokens, device):
+def step_loss(model, sample, senders, n_tokens, device, budget):
     pose = torch.as_tensor(sample["ego_pose"], dtype=torch.float32, device=device).reshape(1, 6)
     stamp = torch.tensor([float(sample["timestamp"])], dtype=torch.float32, device=device)
     motion = torch.as_tensor(sample["motion"], dtype=torch.float32, device=device).reshape(1, 2)
     sent = []
     for row in senders:
-        sent.append(model.transmit(move_sender(row, device), pose[0].detach().cpu().numpy(), int(sample["receiver_id"]), n_tokens))
+        sent.append(
+            model.transmit(
+                move_sender(row, device),
+                pose[0].detach().cpu().numpy(),
+                int(sample["receiver_id"]),
+                n_tokens,
+                budget=budget,
+            )
+        )
     blobs = [item["blob"] for item in sent if item["blob"]]
     if model.method == "B0" or not blobs:
         pred = model(pose, stamp, motion, [blobs])
@@ -97,7 +105,7 @@ def step_loss(model, sample, senders, n_tokens, device):
     return loss, sent, pred
 
 
-def evaluate(model, samples, cache, n_tokens, device):
+def evaluate(model, samples, cache, n_tokens, device, budget):
     model.eval()
     acc = new_counts()
     sizes = []
@@ -111,7 +119,13 @@ def evaluate(model, samples, cache, n_tokens, device):
             motion = torch.as_tensor(sample["motion"], dtype=torch.float32, device=device).reshape(1, 2)
             blobs = []
             for row in senders:
-                sent = model.transmit(move_sender(row, device), pose[0].detach().cpu().numpy(), int(sample["receiver_id"]), n_tokens)
+                sent = model.transmit(
+                    move_sender(row, device),
+                    pose[0].detach().cpu().numpy(),
+                    int(sample["receiver_id"]),
+                    n_tokens,
+                    budget=budget,
+                )
                 if sent["blob"]:
                     blobs.append(sent["blob"])
                     sizes.append(len(sent["blob"]))
@@ -124,6 +138,8 @@ def evaluate(model, samples, cache, n_tokens, device):
             update_counts(acc, sem, tri, sample["gt_semantic"], sample["gt_tristate"])
     metrics = finalize_counts(acc)
     metrics["bytes_per_frame"] = float(np.mean(sizes)) if sizes else 0.0
+    metrics["bytes_min"] = float(np.min(sizes)) if sizes else 0.0
+    metrics["bytes_max"] = float(np.max(sizes)) if sizes else 0.0
     metrics["codebook_usage"] = _usage(model.method, codes, classes, model.codebook_size)
     metrics["road_token_fraction"] = _road_fraction(classes)
     return metrics
@@ -155,21 +171,6 @@ def _road_fraction(classes) -> float | None:
     return float(np.mean(cls == 5))
 
 
-def matched_token_count(cache, method: str) -> int:
-    """Pick a token count every method can fill, then stay inside 32KB."""
-    counts = [int(len(row["coords"])) for rows in cache.values() for row in rows]
-    if not counts:
-        return int(budget_for(method)["n_tokens"])
-    median = int(np.median(counts))
-    supplies = []
-    for name in ("B1", "B2", "B3", "B4"):
-        cap = int(budget_for(name)["n_tokens"])
-        supplies.append(nbytes_for_count(name, min(median, cap)))
-    target = min([TARGET_BYTES, *supplies])
-    n_tokens = int(budget_for(method, target=target)["n_tokens"])
-    return min(n_tokens, median) if method != "B0" else 0
-
-
 def train_one(method, train_samples, val_samples, cache, cfg, device):
     set_seed(int(cfg["seed"]))
     model = BorrowedSight(method, feat_dim=int(cfg["feat_dim"]), codebook_size=int(cfg["codebook_size"])).to(device)
@@ -179,8 +180,12 @@ def train_one(method, train_samples, val_samples, cache, cfg, device):
         param.requires_grad = False
     params = [param for param in model.parameters() if param.requires_grad]
     opt = torch.optim.AdamW(params, lr=float(cfg["lr"]), weight_decay=1e-4)
-    n_tokens = matched_token_count(cache, method)
-    print(f"{method} token budget {n_tokens}", flush=True)
+    budget = packet_layout(method, int(cfg.get("fair_bytes", FAIR_BUDGET_BYTES)))
+    n_tokens = int(budget["n_tokens"])
+    print(
+        f"{method} token budget {n_tokens} serialized {budget['serialized']} tail {budget['tail']}",
+        flush=True,
+    )
     keys = list(train_samples)
     rng = np.random.default_rng(int(cfg["seed"]))
     losses = []
@@ -198,7 +203,9 @@ def train_one(method, train_samples, val_samples, cache, cfg, device):
                 break
             key = keys[int(rng.integers(0, len(keys)))]
             opt.zero_grad(set_to_none=True)
-            loss, _sent, _pred = step_loss(model, train_samples[key], cache.get(key, []), n_tokens, device)
+            loss, _sent, _pred = step_loss(
+                model, train_samples[key], cache.get(key, []), n_tokens, device, budget
+            )
             if not torch.isfinite(loss):
                 status = "nan"
                 break
@@ -223,9 +230,20 @@ def train_one(method, train_samples, val_samples, cache, cfg, device):
         status = "no_communication"
     metrics = None
     if status != "nan":
-        metrics = evaluate(model, val_samples, cache, n_tokens, device)
-    record = {"method": method, "status": status, "steps": step, "losses": losses[-20:], "metrics": metrics}
-    torch.save({"model": model.state_dict(), "method": method, "status": status}, CHECKPOINTS / f"{method}_mini.pt")
+        metrics = evaluate(model, val_samples, cache, n_tokens, device, budget)
+    record = {
+        "method": method,
+        "status": status,
+        "steps": step,
+        "n_tokens": n_tokens,
+        "serialized_budget": int(budget["serialized"]),
+        "losses": losses[-20:],
+        "metrics": metrics,
+    }
+    payload = {"model": model.state_dict(), "method": method, "status": status, "seed": int(cfg["seed"])}
+    torch.save(payload, CHECKPOINTS / f"{method}_mini_seed{int(cfg['seed'])}.pt")
+    if int(cfg["seed"]) == 0:
+        torch.save(payload, CHECKPOINTS / f"{method}_mini.pt")
     return record
 
 
@@ -288,17 +306,30 @@ def write_summary(records, decision, path: Path) -> None:
     lines.append("")
     lines.append("| method | status | bytes | mIoU | vehicle IoU | road IoU | unknown F1 | UFE |")
     lines.append("| --- | --- | --- | --- | --- | --- | --- | --- |")
+    spans = []
     for method, record in records.items():
         metrics = record["metrics"] or {}
-        def cell(key):
+
+        def cell(key, metrics=metrics):
             value = metrics.get(key)
             return "" if value is None else f"{value:.6g}"
+
         lines.append(
             f"| {method} | {record['status']} | {cell('bytes_per_frame')} | {cell('mIoU')} | "
             f"{cell('vehicle_IoU')} | {cell('road_IoU')} | {cell('unknown_F1')} | {cell('unobserved_as_free_err')} |"
         )
+        if method != "B0" and metrics.get("bytes_min") is not None:
+            spans.append(f"{method} packet bytes min {cell('bytes_min')} max {cell('bytes_max')}.")
     lines.append("")
-    lines.append(f"Byte error vs 32768: {decision['byte_error']}")
+    lines.extend(spans)
+    if spans:
+        lines.append("")
+    lines.append(
+        "Byte error, max pairwise gap divided by the mean of the measured B1-B4 packets: "
+        f"{decision['byte_error']}"
+    )
+    lines.append(f"Shared serialized budget: {decision.get('serialized_budget')}")
+    lines.append("Token slots a short sender cannot fill are padding. They are not anchors.")
     lines.append(f"B4 codebook usage: {decision['codebook_usage']}")
     lines.append(f"B4 road token fraction: {decision['road_token_fraction']}")
     lines.append("")
@@ -307,7 +338,7 @@ def write_summary(records, decision, path: Path) -> None:
         for reason in decision["reasons"]:
             lines.append(f"- {reason}")
         lines.append("")
-        lines.append("Smallest next change inside the locked design: tighten the thing/edge quota if the road share is the only failure. Do not add a transformer or a new loss.")
+        lines.append("No further architecture change is applied.")
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -340,6 +371,7 @@ def main() -> None:
     needed = ("B0", "B1", "B2", "B3", "B4")
     if all(method in records and records[method]["metrics"] is not None for method in needed):
         decision = gate(records)
+        decision["serialized_budget"] = records["B4"].get("serialized_budget")
     else:
         decision = {
             "pass": False,
@@ -354,6 +386,7 @@ def main() -> None:
             "codebook_usage": None,
             "road_token_fraction": None,
             "decision_rule": "incomplete",
+            "serialized_budget": None,
         }
     out = OUTPUTS / "phase4_gate3" / "summary.md"
     write_summary(records, decision, out)

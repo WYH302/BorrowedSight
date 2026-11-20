@@ -103,6 +103,8 @@ def encode_packet(
     payload: dict,
     envelope: np.ndarray | None,
     stage: int = 1,
+    pad_slots: int | None = None,
+    tail_bytes: int = 0,
 ) -> bytes:
     tokens = encode_tokens(method, coords, payload, stage=stage)
     order = np.argsort(decode_sort_key(tokens), kind="mergesort") if tokens.shape[0] else np.zeros(0, dtype=np.int64)
@@ -118,6 +120,8 @@ def encode_packet(
         tokens,
         envelope=envelope,
         stage=stage,
+        pad_slots=pad_slots,
+        tail_bytes=tail_bytes,
     )
 
 

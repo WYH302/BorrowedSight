@@ -3,6 +3,7 @@ feat_dim: 16
 codebook_size: 32
 num_quantizers: 2
 target_bytes: 32768
+fair_bytes: 16384
 stage_at_target: 1
 batch_size: 2
 lr: 0.0003
