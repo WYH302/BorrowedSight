@@ -1,0 +1,51 @@
+---
+description: BorrowedSight architecture lock. Applies to every session.
+alwaysApply: true
+---
+
+# BorrowedSight constitution
+
+Follow `CLAUDE.md` and `paper/STORY.md`. One axis only: with no ego environmental observation, neighbor messages are the only evidence; a voxel that was not transmitted is not safe free space.
+
+Do not invent mIoU, UFE, or any experimental number. Gate thresholds in `CLAUDE.md` are stop rules, not measurements.
+
+## Environment
+
+- Train on Windows with `D:\App1\bs_cuda\Scripts\python.exe` only.
+- Never install into or modify `D:\App1\environment` (CPU PyTorch).
+- Never export, unregister, or write into WSL (`OCCAM-Ubuntu`, `Astra-Ubuntu-22.04`).
+- Data and caches go to `D:\bs_data\BorrowedSight`. Do not create `cache/` in this repo. Do not download OPV2V or any dataset from this repo.
+- Do not install the environments in `refs/`. Do not compile custom CUDA.
+
+## Model lock
+
+- Pure PyTorch only: scatter voxelization, height-collapsed 2D residual UNet, PyTorch attention at the coarsest level. `torch.compile` may fall back to eager.
+- Forbidden imports and packages: spconv, MinkowskiEngine, mmcv, custom CUDA ops.
+
+```text
+# BAD
+pip install spconv mmcv MinkowskiEngine
+# GOOD
+# voxelize with torch scatter in models/; quantize with ResidualSimVQ
+```
+
+- Quantizer: `ResidualSimVQ(rotation_trick=True)` from `vector-quantize-pytorch`.
+- 12-class head. Three geometry codebooks only: Things, Ground, Vertical Static. Low bandwidth sends level 1; high bandwidth adds level 2.
+- Pack 16 tokens per Morton micro-block, plus a coarse visibility envelope of about 0.5KB. Implicit ray carving is auxiliary and must not replace the envelope.
+- Grid and class names come from `refs/CoHFF`: `task_config.yml` `vox_range: [20, 20, 0.9, -20, -20, -2.5]`, `h/w/z: 100/100/8`. The 12 head classes are ids 1–12 in `opv2v_label_name.yaml` (Building through Bridge). Id 0 Unlabeled is ignore, not a head class. Do not hand-write a second range or a fourth geometry codebook.
+- Sender input is the neighbor OPV2V `.pcd` only. Semantic-OPV2V 4LidarSurround is the label, not the network input. Do not port the CoHFF or VQSOP camera backbones. B3 may borrow the SAVQ mechanism only.
+
+## Labels and Zero-Ego
+
+Tri-state comes from sender rays only: 0 Unknown, 1 Observed Free, 2 Occupied. Semantic loss on Unknown uses `ignore_index`. An unscanned cell filled with 0 in Semantic-OPV2V is not free.
+
+Receiver inputs are only `ego_pose`, time, vehicle state, and neighbor messages. Forbidden: ego camera, ego lidar, ego radar, ego depth, features or occupancy computed from ego sensors, caches that carry ego scene content, test labels, future frames, map priors. Ego is never a sender.
+
+The six leakage tests in `CLAUDE.md` stay in force. Same backbone, decoder, and packer for B0–B4. B0 drops the packet. B1 is the same-byte sparse-feature upper bound. B2 is same-byte continuous features. B3 is the shared codebook. B4 is this method.
+
+## Do not add
+
+- LiDARWeather-style jitter and point drop are train-only. They are not the weather test.
+- LISA physics (Beer-Lambert / rain backscatter) is test-only. Keep its parameters separate from training augmentation.
+- No second dataset, no Gaussian splatting, no diffusion, no RL point selection, no tying global delta coding to packet-loss experiments.
+- Do not give B4 a different backbone. If Gate 3 fails, stop and change one factor.

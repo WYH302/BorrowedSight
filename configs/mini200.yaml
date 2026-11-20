@@ -1,0 +1,11 @@
+root: D:/bs_data/BorrowedSight/mini200
+scenes: 2
+frames_per_scene: 100
+n_beams: 48
+n_azimuth: 360
+max_range_m: 45.0
+min_range_m: 1.0
+sensor_z_m: 1.6
+seed: 0
+val_every: 5
+dt_s: 0.1

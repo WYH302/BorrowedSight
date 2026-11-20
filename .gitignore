@@ -1,0 +1,19 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+
+# Local checkouts. Hashes stay in refs/COMMITS.txt.
+refs/*
+!refs/COMMITS.txt
+
+# Run artifacts. Keep the directory markers.
+outputs/*
+!outputs/.gitkeep
+*.pth
+*.pt
+*.ckpt
+*.npy
+*.pcd

@@ -1,0 +1,10 @@
+# Copied from refs/CoHFF/cohff_opv2v/config/train_config/task_config.yml
+# and the voxel indexing in refs/CoHFF/cohff_opv2v/opv2v_dataset/opv2v_dataset.py.
+# vox_range order is CoHFF's own order: [max_x, max_y, max_z, min_x, min_y, min_z].
+# Do not replace this with a hand-written 0.4 m cube. Their interval is
+# (max - min) / (grid_size - 1), and a point is kept only if min < p < max.
+
+vox_range: [20, 20, 0.9, -20, -20, -2.5]
+grid_size: [100, 100, 8]  # h, w, z  -> x, y, z
+nbr_class: 13
+fill_label: 0

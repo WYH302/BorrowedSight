@@ -1,0 +1,20 @@
+# Train augmentation and LISA test weather use disjoint parameters.
+# LiDARWeather is not a test set. Test weather is Beer-Lambert / rain
+# backscatter only, and those coefficients are never used in training.
+
+train:
+  name: light_drop_jitter
+  drop_prob: 0.05
+  jitter_std_m: 0.01
+
+test_fog:
+  name: lisa_beer_lambert_fog
+  two_way: true
+  alpha_per_m: 0.08
+
+test_rain:
+  name: lisa_rain_backscatter
+  two_way: true
+  alpha_per_m: 0.025
+  rainfall_mm_h: 40.0
+  backscatter_prob_per_m: 0.01
