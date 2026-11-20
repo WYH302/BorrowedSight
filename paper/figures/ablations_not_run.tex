@@ -1,0 +1,10 @@
+% Ablations were not run. This is not a result table.
+% Reasons are copied from outputs/phase5/ablations.csv.
+\paragraph{Ablations.}
+These ablations were not run. No metric cells are filled.
+\begin{itemize}
+\item \texttt{envelope}: not\_run. B4 always writes the 512-byte envelope. There is no switch that removes it.
+\item \texttt{grouped\_codebooks}: not\_run. Three geometry books versus one shared book is the B4 versus B3 pair, not a switch on one weight.
+\item \texttt{road\_quota}: not\_run. The quota floors are fixed arguments. Changing them would be a new selection rule.
+\item \texttt{second\_code\_level}: not\_run. Transmit defaults to stage 1, which is the stage the decoder was trained on.
+\end{itemize}
