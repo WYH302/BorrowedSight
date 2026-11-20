@@ -34,6 +34,8 @@ INTERVALS = (MAX_BOUND - MIN_BOUND) / (GRID_NP - 1)
 
 
 def _as_pose(pose) -> np.ndarray:
+    if torch.is_tensor(pose):
+        pose = pose.detach().float().cpu().numpy()
     pose = np.asarray(pose, dtype=np.float64).reshape(-1)
     if pose.shape != (6,):
         raise ValueError(f"pose must be length 6, got {pose.shape}")

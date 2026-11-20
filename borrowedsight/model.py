@@ -131,11 +131,11 @@ class BorrowedSight(nn.Module):
         class_k = classes[chosen]
         coords = cached["coords"][chosen]
         recon, wire, code, vq_loss = self._represent(fused_k, class_k, stage)
-        conf = torch.sigmoid(logits[chosen].detach()).clamp(0, 1)
-        payload = _numpy_payload(self.method, wire.detach(), code, class_k.detach(), conf, stage)
+        conf = torch.sigmoid(logits[chosen].detach()).clamp(0, 1) if chosen.numel() else fused.new_zeros(0)
         envelope = cached.get("envelope") if self.method == "B4" else None
         blob = b""
-        if self.method != "B0":
+        if self.method != "B0" and wire.numel() > 0:
+            payload = _numpy_payload(self.method, wire.detach(), code, class_k.detach(), conf, stage)
             blob = encode_packet(
                 self.method,
                 int(cached["sender_id"]),
@@ -189,8 +189,8 @@ class BorrowedSight(nn.Module):
         }
 
     def _represent(self, fused: torch.Tensor, classes: torch.Tensor, stage: int):
-        empty = fused.reshape(0, self.feat_dim)
         if fused.numel() == 0:
+            empty = fused.reshape(0, self.feat_dim)
             return empty, empty, None, fused.new_zeros(())
         if self.method == "B1":
             wire = fp16_ste(fused)

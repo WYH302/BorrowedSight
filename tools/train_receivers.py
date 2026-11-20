@@ -15,7 +15,7 @@ from borrowedsight.data import Mini200, loss_targets
 from borrowedsight.labels import GROUND, IGNORE_INDEX, THINGS, VERTICAL
 from borrowedsight.metrics import finalize_counts, new_counts, update_counts
 from borrowedsight.model import BorrowedSight, score_bce
-from borrowedsight.packer import TARGET_BYTES, budget_for
+from borrowedsight.packer import TARGET_BYTES, budget_for, nbytes_for_count
 from borrowedsight.paths import CACHE_CLEAR, CHECKPOINTS, CONFIGS, OUTPUTS
 from borrowedsight.registry import log_run
 
@@ -155,6 +155,21 @@ def _road_fraction(classes) -> float | None:
     return float(np.mean(cls == 5))
 
 
+def matched_token_count(cache, method: str) -> int:
+    """Pick a token count every method can fill, then stay inside 32KB."""
+    counts = [int(len(row["coords"])) for rows in cache.values() for row in rows]
+    if not counts:
+        return int(budget_for(method)["n_tokens"])
+    median = int(np.median(counts))
+    supplies = []
+    for name in ("B1", "B2", "B3", "B4"):
+        cap = int(budget_for(name)["n_tokens"])
+        supplies.append(nbytes_for_count(name, min(median, cap)))
+    target = min([TARGET_BYTES, *supplies])
+    n_tokens = int(budget_for(method, target=target)["n_tokens"])
+    return min(n_tokens, median) if method != "B0" else 0
+
+
 def train_one(method, train_samples, val_samples, cache, cfg, device):
     set_seed(int(cfg["seed"]))
     model = BorrowedSight(method, feat_dim=int(cfg["feat_dim"]), codebook_size=int(cfg["codebook_size"])).to(device)
@@ -164,7 +179,8 @@ def train_one(method, train_samples, val_samples, cache, cfg, device):
         param.requires_grad = False
     params = [param for param in model.parameters() if param.requires_grad]
     opt = torch.optim.AdamW(params, lr=float(cfg["lr"]), weight_decay=1e-4)
-    n_tokens = int(budget_for(method)["n_tokens"])
+    n_tokens = matched_token_count(cache, method)
+    print(f"{method} token budget {n_tokens}", flush=True)
     keys = list(train_samples)
     rng = np.random.default_rng(int(cfg["seed"]))
     losses = []
@@ -222,7 +238,8 @@ def gate(records: dict) -> dict:
     sizes = [value for value in sizes if value is not None]
     byte_error = None
     if sizes:
-        byte_error = max(abs(a - b) for a in sizes for b in sizes) / float(TARGET_BYTES)
+        mean_size = float(np.mean(sizes))
+        byte_error = None if mean_size <= 0 else max(abs(a - b) for a in sizes for b in sizes) / mean_size
     b4_iou, b3_iou = metric("B4", "mIoU"), metric("B3", "mIoU")
     b4_veh, b3_veh = metric("B4", "vehicle_IoU"), metric("B3", "vehicle_IoU")
     b4_ufe, b3_ufe = metric("B4", "unobserved_as_free_err"), metric("B3", "unobserved_as_free_err")

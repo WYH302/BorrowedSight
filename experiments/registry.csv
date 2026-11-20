@@ -1,1 +1,9 @@
-date,phase,exp_id,status,note
+exp_id,date,git_commit,model_name,seed,bytes_per_frame,mbps_10hz,mIoU,vehicle_IoU,road_IoU,unknown_F1,unobserved_as_free_err,status
+sender_mini_seed0,2026-11-21,d0c5f19,sender_mini,0,0,0,0.30996499,0.43907463,0.47983207,0,0.6406165,loss_dropped
+B0_mini_seed0,2026-11-21,d0c5f19,B0,0,0,0,0,0,0,0.84751653,0,no_communication
+B0_mini_seed0,2026-11-21,d0c5f19,B0,0,0,0,0,0,0,0.84751653,0,no_communication
+B0_mini_seed0,2026-11-21,d0c5f19,B0,0,0,0,0,0,0,0.84751653,0,no_communication
+B1_mini_seed0,2026-11-21,d0c5f19,B1,0,15248,1.21984,0.37871849,0.4257821,0.48671217,0.94608627,0.037755421,loss_dropped
+B2_mini_seed0,2026-11-21,d0c5f19,B2,0,15152,1.21216,0.42620741,0.59240257,0.2872275,0.95002178,0.056098333,loss_dropped
+B3_mini_seed0,2026-11-21,d0c5f19,B3,0,14286.2,1.142896,0.2939664,0.0457581,0.43355482,0.95967991,0.030893348,loss_dropped
+B4_mini_seed0,2026-11-21,d0c5f19,B4,0,14156.733,1.1325387,0.31425315,0.2125929,0.27536621,0.96205698,0.03071827,loss_dropped
