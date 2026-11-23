@@ -228,6 +228,19 @@ def plot_family(rows: list[dict[str, str]], family: str, xlabel: str, stem: str)
     save(fig, stem)
 
 
+def write_ablation_table(rows: list[dict[str, str]]) -> None:
+    headers = ["variant", "bytes", "mIoU", "vehicle IoU", "road IoU", "unknown F1", "UFE"]
+    fields = ("name", "bytes_per_frame", "mIoU", "vehicle_IoU", "road_IoU", "unknown_F1", "unobserved_as_free_err")
+    write_tabular(
+        OUT / "tab_ablations.tex",
+        "% Cells copied verbatim from outputs/phase5/ablations.csv.",
+        "Synthetic Mini-200 core ablations at matched 16,384-byte serialized packets (fixed coordinate-warped envelope and intact VQ gradients).",
+        "tab:ablations",
+        headers,
+        [[row.get(f, "") for f in fields] for row in rows],
+    )
+
+
 def write_ablation_note(rows: list[dict[str, str]]) -> None:
     lines = [
         "% Ablations were not run. This is not a result table.",
@@ -244,7 +257,7 @@ def write_ablation_note(rows: list[dict[str, str]]) -> None:
     (OUT / "ablations_not_run.tex").write_text("\n".join(lines), encoding="utf-8")
 
 
-def write_includes() -> None:
+def write_includes(ablation_tex: str = "ablations_not_run.tex") -> None:
     lines = [
         "% Include from the paper/ directory. Tables already contain table environments.",
         "% Requires booktabs. Synthetic Mini-200 only; not OPV2V acceptance.",
@@ -275,7 +288,7 @@ def write_includes() -> None:
         )
     lines.extend(
         [
-            "\\input{figures/ablations_not_run.tex}",
+            f"\\input{{figures/{ablation_tex}}}",
             "",
         ]
     )
@@ -348,14 +361,18 @@ def main() -> None:
         )
         plot_family(measured, family, xlabel, stem)
 
-    if any(row["status"] != "not_run" for row in ablations):
-        raise SystemExit("ablations.csv contains a status other than not_run; refusing to invent a result table")
-    for row in ablations:
-        for field in ("name", "status", "reason"):
-            if row[field] not in ablation_text:
-                raise SystemExit(f"ablation text missing from source: {row['name']} {field}")
-    write_ablation_note(ablations)
-    write_includes()
+    if all(row.get("status") == "measured" for row in ablations) and ablations:
+        ab_cells = [row[f] for row in ablations for f in ("name", "bytes_per_frame", "mIoU", "vehicle_IoU", "road_IoU", "unknown_F1", "unobserved_as_free_err") if f in row]
+        assert_in_source(ab_cells, ablation_text, "ablations table")
+        write_ablation_table(ablations)
+        write_includes("tab_ablations.tex")
+    else:
+        for row in ablations:
+            for field in ("name", "status", "reason"):
+                if field in row and row[field] not in ablation_text:
+                    raise SystemExit(f"ablation text missing from source: {row['name']} {field}")
+        write_ablation_note(ablations)
+        write_includes("ablations_not_run.tex")
     print(f"gate commits: {commits}")
     print(f"gate rows: {[row['exp_id'] for row in gate]}")
     print(f"measured rows: {len(measured)}")

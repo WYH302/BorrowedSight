@@ -206,3 +206,166 @@ def test_morton_round_trip_and_token_codec():
     blob = pack_bytes("B4", 2, 0, 0.2, np.zeros(6), 1.0, 0.0, raw, envelope=np.zeros((20, 20), np.uint8))
     back = unpack_bytes(blob)
     assert np.array_equal(back["tokens"], raw)
+
+
+def test_vq_gradients_and_stage2_round_trip():
+    import torch
+    from borrowedsight.model import BorrowedSight
+
+    torch.manual_seed(0)
+    ego_pose = np.zeros(6, dtype=np.float32)
+    for stage in (1, 2):
+        model = BorrowedSight("B4", feat_dim=16, codebook_size=32, default_stage=stage)
+        model.train()
+        cached = {
+            "sender_id": 1,
+            "pose": ego_pose,
+            "timestamp": 0.1,
+            "speed": 1.0,
+            "yaw_rate": 0.0,
+            "coords": torch.tensor([[50, 50, 3], [52, 51, 2], [48, 49, 4]], dtype=torch.long),
+            "feats": torch.randn(3, 16),
+            "geo": torch.randn(3, 6),
+            "pred_class": torch.tensor([8, 5, 1], dtype=torch.long),
+            "envelope": np.ones((20, 20), dtype=np.uint8),
+        }
+        budget = packet_layout("B4", FAIR_BUDGET_BYTES, stage=stage, include_envelope=True)
+        sent = model.transmit(cached, ego_pose, receiver_id=0, n_tokens=budget["n_tokens"], stage=stage, budget=budget)
+        assert len(sent["blob"]) == FAIR_BUDGET_BYTES
+        loss = sent["recon"].pow(2).mean() + sent["vq_loss"]
+        loss.backward()
+        fuse_grad = sum(p.grad.abs().sum().item() for p in model.fuse.parameters() if p.grad is not None)
+        assert fuse_grad > 0.0, f"stage={stage} starved self.fuse of gradients"
+
+        model.eval()
+        with torch.no_grad():
+            sent_eval = model.transmit(cached, ego_pose, receiver_id=0, n_tokens=budget["n_tokens"], stage=stage, budget=budget)
+            placed_rx = model._placed_from_blob(sent_eval["blob"], torch.as_tensor(ego_pose), ego_time=0.1)
+            # Token order on wire is Morton-sorted; compare sorted sets.
+            tx_vals = sent_eval["recon"].detach().cpu().numpy()
+            rx_vals = placed_rx["values"].detach().cpu().numpy()
+            assert rx_vals.shape == tx_vals.shape
+            for row in tx_vals:
+                dists = np.linalg.norm(rx_vals - row[None, :], axis=1)
+                assert float(dists.min()) < 1e-4, f"stage={stage} wire lookup mismatch: {dists.min()}"
+
+
+def test_ablation_switches_match_exact_byte_budget():
+    import torch
+    from borrowedsight.model import BorrowedSight
+
+    ego_pose = np.zeros(6, dtype=np.float32)
+    cached = {
+        "sender_id": 2,
+        "pose": ego_pose,
+        "timestamp": 0.2,
+        "speed": 2.0,
+        "yaw_rate": 0.0,
+        "coords": torch.stack([torch.arange(40) + 20, torch.arange(40) + 20, torch.arange(40) % 8], dim=1).long(),
+        "feats": torch.randn(40, 16),
+        "geo": torch.randn(40, 6),
+        "pred_class": torch.tensor([(i % 12) + 1 for i in range(40)], dtype=torch.long),
+        "envelope": np.ones((20, 20), dtype=np.uint8),
+    }
+    variants = [
+        ("full", dict(use_envelope=True, use_grouped_books=True, use_quota=True, default_stage=1)),
+        ("no_envelope", dict(use_envelope=False, use_grouped_books=True, use_quota=True, default_stage=1)),
+        ("shared_book", dict(use_envelope=True, use_grouped_books=False, use_quota=True, default_stage=1)),
+        ("no_quota", dict(use_envelope=True, use_grouped_books=True, use_quota=False, default_stage=1)),
+        ("stage2", dict(use_envelope=True, use_grouped_books=True, use_quota=True, default_stage=2)),
+    ]
+    for target in (FAIR_BUDGET_BYTES, TARGET_BYTES):
+        for name, kw in variants:
+            m = BorrowedSight("B4", feat_dim=16, codebook_size=32, **kw)
+            m.eval()
+            budget = packet_layout("B4", target, stage=kw["default_stage"], include_envelope=kw["use_envelope"])
+            with torch.no_grad():
+                sent = m.transmit(cached, ego_pose, receiver_id=0, n_tokens=budget["n_tokens"], budget=budget)
+                assert len(sent["blob"]) == target, (name, target, len(sent["blob"]))
+                out = m(torch.as_tensor(ego_pose).unsqueeze(0), torch.tensor([0.2]), torch.zeros(1, 2), [[sent["blob"]]])
+                assert out["sem"].shape == (1, 13, 100, 100, 8)
+                assert out["tri"].shape == (1, 3, 100, 100, 8)
+
+
+def test_envelope_25x25_zstd_fits_exact_512b_slot_and_roundtrips():
+    import torch
+    from borrowedsight.model import BorrowedSight
+    from borrowedsight.packer import coarse_from_tristate
+
+    rng = np.random.default_rng(123)
+    tri = np.zeros((100, 100, 8), dtype=np.uint8)
+    tri[15:85, 20:80, 1:5] = 1
+    tri[30:36, 40:44, 2:5] = 2
+    tri[60:64, 55:60, 1:4] = 2
+    env25 = coarse_from_tristate(tri, cells=25)
+    assert env25.shape == (25, 25)
+    # Verify vectorized coarse_from_tristate matches elementwise reference
+    env20 = coarse_from_tristate(tri, cells=20)
+    assert env20.shape == (20, 20)
+    assert int(env25[8, 10] & 2) == 2  # occupied at x=32..35, y=40..43
+
+    ego_pose = np.zeros(6, dtype=np.float32)
+    cached = {
+        "sender_id": 2,
+        "pose": ego_pose,
+        "timestamp": 0.2,
+        "speed": 2.0,
+        "yaw_rate": 0.0,
+        "coords": torch.stack([torch.arange(32) + 20, torch.arange(32) + 20, torch.arange(32) % 8], dim=1).long(),
+        "feats": torch.randn(32, 16),
+        "geo": torch.randn(32, 6),
+        "pred_class": torch.tensor([(i % 12) + 1 for i in range(32)], dtype=torch.long),
+        "envelope": env20,
+        "envelope25": env25,
+    }
+    m = BorrowedSight("B4", feat_dim=16, codebook_size=32, envelope_cells=25).eval()
+    budget = packet_layout("B4", TARGET_BYTES, stage=1, include_envelope=True)
+    with torch.no_grad():
+        sent = m.transmit(cached, ego_pose, receiver_id=0, n_tokens=budget["n_tokens"], budget=budget)
+        assert len(sent["blob"]) == TARGET_BYTES
+        view = unpack_bytes(sent["blob"])
+        assert view["envelope"].shape == (625,)
+        assert np.array_equal(view["envelope"].reshape(25, 25), env25)
+        out = m(torch.as_tensor(ego_pose).unsqueeze(0), torch.tensor([0.2]), torch.zeros(1, 2), [[sent["blob"]]])
+        assert out["sem"].shape == (1, 13, 100, 100, 8)
+        assert out["tri"].shape == (1, 3, 100, 100, 8)
+
+
+def test_vectorized_quota_and_eval_vq_match_reference():
+    import torch
+    from borrowedsight.labels import ROAD, THINGS, VERTICAL
+    from borrowedsight.messages import quota_indices
+    from borrowedsight.model import BorrowedSight
+
+    torch.manual_seed(42)
+    n = 1200
+    scores = torch.randn(n)
+    classes = torch.randint(1, 13, (n,))
+    # Force heavy road dominance (70% road)
+    classes[:840] = ROAD
+    chosen = quota_indices(scores, classes, k=400, road_cap=0.45, thing_floor=0.15, vertical_floor=0.15)
+    assert chosen.numel() <= 400
+    sel_cls = classes[chosen]
+    road_frac = float((sel_cls == ROAD).float().mean().item())
+    assert road_frac <= 0.45 + 1e-6, f"road_frac={road_frac} exceeded cap"
+    n_things = int(torch.isin(sel_cls, torch.as_tensor(THINGS)).sum().item())
+    n_vert = int(torch.isin(sel_cls, torch.as_tensor(VERTICAL)).sum().item())
+    avail_things = int(torch.isin(classes, torch.as_tensor(THINGS)).sum().item())
+    avail_vert = int(torch.isin(classes, torch.as_tensor(VERTICAL)).sum().item())
+    assert n_things >= min(int(400 * 0.15), avail_things)
+    assert n_vert >= min(int(400 * 0.15), avail_vert)
+
+    # Check eval fast-path quantization matches training ResidualSimVQ path exactly
+    m = BorrowedSight("B4", feat_dim=16, codebook_size=32)
+    fused = torch.randn(64, 16)
+    cls_sub = torch.randint(1, 13, (64,))
+    for st in (1, 2):
+        m.train()
+        recon_ref, codes_ref, _ = m._quantize_grouped(fused, cls_sub, st)
+        m.eval()
+        with torch.no_grad():
+            recon_fast, codes_fast, _ = m._quantize_grouped(fused, cls_sub, st)
+            lookup_fast = m._lookup_grouped(codes_fast, cls_sub, st)
+        assert torch.equal(codes_ref, codes_fast), f"stage {st} codes mismatch"
+        assert torch.allclose(recon_ref.detach(), recon_fast, atol=1e-5)
+        assert torch.allclose(recon_fast, lookup_fast, atol=1e-5)

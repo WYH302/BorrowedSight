@@ -130,3 +130,74 @@ def test_lisa_weather_parameters_are_disjoint_from_training():
     assert "alpha_per_m" not in cfg["train"]
     assert cfg["test_fog"]["alpha_per_m"] != cfg["train"]["drop_prob"]
     assert cfg["test_rain"]["rainfall_mm_h"] > 0
+
+
+def test_envelope_warps_from_sender_to_ego_frame():
+    import torch
+    from borrowedsight.model import _paint_envelope
+
+    ego_pose = np.array([0.0, 0.0, 1.6, 0.0, 0.0, 0.0], dtype=np.float32)
+    # Sender is at (x=6m, y=0m) rotated +90 deg yaw (its +x points along ego +y).
+    sender_pose = np.array([6.0, 0.0, 1.6, 0.0, 90.0, 0.0], dtype=np.float32)
+    # Mark coarse cell (cx=15, cy=10) => sender x in [+10..+12m], y in [0..+2m] as FREE (bit 0).
+    # In EGO frame, sender point (11, 1, 0) transforms to (6 - 1, 0 + 11, 0) = (5m, 11m, 0).
+    env = np.full((20, 20), 4, dtype=np.uint8)  # Unknown everywhere else
+    env[15, 10] = 1  # Observed Free only
+    extra = torch.zeros(7, 100, 100, dtype=torch.float32)
+    extra[2] = 1.0
+    free_ego = _paint_envelope(extra, env, sender_pose=sender_pose, ego_pose=ego_pose)
+
+    idx_hit, valid_hit = voxel_index(np.array([[5.0, 11.0, 0.0]]))
+    assert bool(valid_hit[0])
+    ix, iy = int(idx_hit[0, 0]), int(idx_hit[0, 1])
+    assert float(free_ego[ix, iy]) == 1.0
+    assert float(extra[0, ix, iy]) == 1.0
+    assert float(extra[2, ix, iy]) == 0.0
+
+    # The UN-transformed sender-local cell (x=11m, y=1m) must NOT be falsely marked free in EGO!
+    idx_wrong, _ = voxel_index(np.array([[11.0, 1.0, 0.0]]))
+    wx, wy = int(idx_wrong[0, 0]), int(idx_wrong[0, 1])
+    assert float(free_ego[wx, wy]) == 0.0
+    assert float(extra[2, wx, wy]) == 1.0
+
+    # Also verify 25x25 (1.6 m) envelope warps identically from sender to EGO!
+    # Cell (cx=19, cy=13) in 25x25 covers sender x in [10.4..12.0m], y in [0.8..2.4m]; center=(11.2, 1.6)
+    # In EGO frame (sender at (6, 0), +90 deg yaw): (6 - 1.6, 0 + 11.2) = (4.4m, 11.2m).
+    env25 = np.full((25, 25), 4, dtype=np.uint8)
+    env25[19, 13] = 1
+    extra25 = torch.zeros(7, 100, 100, dtype=torch.float32)
+    extra25[2] = 1.0
+    free25 = _paint_envelope(extra25, env25, sender_pose=sender_pose, ego_pose=ego_pose)
+    idx25, valid25 = voxel_index(np.array([[4.4, 11.2, 0.0]]))
+    assert bool(valid25[0])
+    ix25, iy25 = int(idx25[0, 0]), int(idx25[0, 1])
+    assert float(free25[ix25, iy25]) == 1.0
+    assert float(extra25[0, ix25, iy25]) == 1.0
+    assert float(extra25[2, ix25, iy25]) == 0.0
+
+
+def test_sender_origin_is_sensor_not_grid_corner():
+    import torch
+    from borrowedsight.model import BorrowedSight
+
+    model = BorrowedSight("B4", feat_dim=16, codebook_size=32)
+    ego_pose = np.array([10.0, 5.0, 1.6, 0.0, 0.0, 0.0], dtype=np.float32)
+    sender_pose = np.array([16.0, 2.0, 1.6, 0.0, 45.0, 0.0], dtype=np.float32)
+    cached = {
+        "sender_id": 1,
+        "pose": sender_pose,
+        "timestamp": 0.5,
+        "speed": 2.0,
+        "yaw_rate": 0.0,
+        "coords": torch.tensor([[50, 50, 3]], dtype=torch.long),
+        "feats": torch.randn(1, 16),
+        "geo": torch.randn(1, 6),
+        "pred_class": torch.tensor([8], dtype=torch.long),
+        "envelope": np.zeros((20, 20), dtype=np.uint8),
+    }
+    sent = model.transmit(cached, ego_pose, receiver_id=0, n_tokens=16)
+    placed_tx = model.placed_from_transmit(sent, ego_pose, ego_time=0.5)
+    placed_rx = model._placed_from_blob(sent["blob"], torch.as_tensor(ego_pose), ego_time=0.5)
+    expected = np.array([6.0, -3.0, 0.0], dtype=np.float32)
+    assert np.allclose(placed_tx["origin_ego"].detach().cpu().numpy(), expected, atol=1e-4)
+    assert np.allclose(placed_rx["origin_ego"].detach().cpu().numpy(), expected, atol=1e-4)

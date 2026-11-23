@@ -41,6 +41,23 @@ _U32 = struct.Struct(_LE + "I")
 _COMPRESSOR = zstandard.ZstdCompressor(level=3)
 _DECOMPRESSOR = zstandard.ZstdDecompressor()
 
+_MORTON_X = np.zeros(128, dtype=np.uint32)
+_MORTON_Y = np.zeros(128, dtype=np.uint32)
+_MORTON_Z = np.zeros(8, dtype=np.uint32)
+for _i in range(128):
+    _mx = 0
+    for _bit in range(7):
+        if (_i >> _bit) & 1:
+            _mx |= 1 << (3 * _bit)
+    _MORTON_X[_i] = _mx
+    _MORTON_Y[_i] = _mx << 1
+for _i in range(8):
+    _mz = 0
+    for _bit in range(3):
+        if (_i >> _bit) & 1:
+            _mz |= 1 << (3 * _bit + 2)
+    _MORTON_Z[_i] = _mz
+
 
 def _low(value: int, bits: int) -> int:
     return int(value) % (2 ** int(bits))
@@ -48,16 +65,10 @@ def _low(value: int, bits: int) -> int:
 
 def morton3(x, y, z) -> np.ndarray:
     """Interleave 7-bit x, 7-bit y and 3-bit z."""
-    xx = np.asarray(x, dtype=np.uint64) % np.uint64(128)
-    yy = np.asarray(y, dtype=np.uint64) % np.uint64(128)
-    zz = np.asarray(z, dtype=np.uint64) % np.uint64(8)
-    code = np.zeros(np.broadcast(xx, yy, zz).shape, dtype=np.uint64)
-    for bit in range(7):
-        code += ((xx // np.uint64(2 ** bit)) % np.uint64(2)) * np.uint64(2 ** (3 * bit))
-        code += ((yy // np.uint64(2 ** bit)) % np.uint64(2)) * np.uint64(2 ** (3 * bit + 1))
-    for bit in range(3):
-        code += ((zz // np.uint64(2 ** bit)) % np.uint64(2)) * np.uint64(2 ** (3 * bit + 2))
-    return code.astype(np.uint32)
+    xx = np.asarray(x, dtype=np.int64) & 0x7F
+    yy = np.asarray(y, dtype=np.int64) & 0x7F
+    zz = np.asarray(z, dtype=np.int64) & 0x07
+    return (_MORTON_X[xx] | _MORTON_Y[yy] | _MORTON_Z[zz]).astype(np.uint32, copy=False)
 
 
 def token_width(method: str, stage: int = 1) -> int:
@@ -71,22 +82,28 @@ def block_size(token_bytes: int) -> int:
     return BLOCK_HDR + BLOCK_TOKENS * int(token_bytes)
 
 
-def nbytes_for_count(method: str, n_tokens: int, stage: int = 1) -> int:
+def _has_envelope(method: str, include_envelope: bool | None = None) -> bool:
+    if include_envelope is None:
+        return method == "B4"
+    return bool(include_envelope)
+
+
+def nbytes_for_count(method: str, n_tokens: int, stage: int = 1, include_envelope: bool | None = None) -> int:
     """Serialized size of a packet that carries exactly this many tokens."""
     if method == "B0" or int(n_tokens) <= 0:
         return 0
     width = token_width(method, stage)
     n_blocks = (int(n_tokens) + BLOCK_TOKENS - 1) // BLOCK_TOKENS
-    env = ENVELOPE_SLOT if method == "B4" else 0
+    env = ENVELOPE_SLOT if _has_envelope(method, include_envelope) else 0
     return HEADER_SIZE + env + n_blocks * block_size(width)
 
 
-def budget_for(method: str, target: int = TARGET_BYTES, stage: int = 1) -> dict:
+def budget_for(method: str, target: int = TARGET_BYTES, stage: int = 1, include_envelope: bool | None = None) -> dict:
     """Largest whole-block packing that does not exceed target."""
     if method == "B0":
         return {"method": method, "n_tokens": 0, "n_blocks": 0, "nbytes": 0, "token_bytes": 0}
     width = token_width(method, stage)
-    env = ENVELOPE_SLOT if method == "B4" else 0
+    env = ENVELOPE_SLOT if _has_envelope(method, include_envelope) else 0
     overhead = HEADER_SIZE + env
     bsize = block_size(width)
     n_blocks = (int(target) - overhead) // bsize
@@ -102,14 +119,14 @@ def budget_for(method: str, target: int = TARGET_BYTES, stage: int = 1) -> dict:
     }
 
 
-def packet_layout(method: str, target: int = FAIR_BUDGET_BYTES, stage: int = 1) -> dict:
+def packet_layout(method: str, target: int = FAIR_BUDGET_BYTES, stage: int = 1, include_envelope: bool | None = None) -> dict:
     """Token count from the byte budget and this method's own token width.
 
     ``serialized`` is ``target`` for B1–B4. ``tail`` is padding after the last
     micro-block and is shorter than one block, so dropping a block cannot
     promote that tail into a token.
     """
-    spec = dict(budget_for(method, target=int(target), stage=stage))
+    spec = dict(budget_for(method, target=int(target), stage=stage, include_envelope=include_envelope))
     spec["target"] = int(target)
     if method == "B0":
         spec["tail"] = 0
@@ -134,29 +151,27 @@ def _tail_field(tail_bytes: int) -> bytes:
 
 
 def coarse_from_tristate(tristate: np.ndarray, cells: int = COARSE) -> np.ndarray:
-    """Pack a 100x100x8 tri-state grid into a coarse flag image."""
+    """Pack a 100x100x8 tri-state grid into a coarse flag image (vectorized)."""
     tri = np.asarray(tristate)
     if tri.shape != (100, 100, 8):
         raise ValueError(f"tristate grid must be 100x100x8, got {tri.shape}")
-    scale = 100 // int(cells)
-    out = np.zeros((cells, cells), dtype=np.uint8)
-    for ix in range(cells):
-        for iy in range(cells):
-            x0 = ix * scale
-            y0 = iy * scale
-            block = tri[x0 : x0 + scale, y0 : y0 + scale]
-            flags = 0
-            if np.any(block == 1):
-                flags += 1
-            if np.any(block == 2):
-                flags += 2
-            if np.any(block == 0):
-                flags += 4
-            occupied_z = np.any(block == 2, axis=(0, 1))
-            if np.any(occupied_z):
-                z_max = int(np.max(np.nonzero(occupied_z)[0]))
-                flags += (z_max % 8) * 8
-            out[ix, iy] = np.uint8(flags)
+    cells_i = int(cells)
+    if cells_i <= 0 or 100 % cells_i != 0:
+        raise ValueError(f"cells must evenly divide 100, got {cells}")
+    scale = 100 // cells_i
+    blocks = tri.reshape(cells_i, scale, cells_i, scale, 8)
+    has_free = np.any(blocks == 1, axis=(1, 3, 4))
+    occ_z = np.any(blocks == 2, axis=(1, 3))
+    has_occ = np.any(occ_z, axis=2)
+    has_unk = np.any(blocks == 0, axis=(1, 3, 4))
+    z_idx = np.arange(8, dtype=np.uint8)[None, None, :]
+    z_max = np.max(np.where(occ_z, z_idx, np.uint8(0)), axis=2)
+    out = (
+        has_free.astype(np.uint8)
+        + has_occ.astype(np.uint8) * np.uint8(2)
+        + has_unk.astype(np.uint8) * np.uint8(4)
+        + np.where(has_occ, z_max, np.uint8(0)) * np.uint8(8)
+    )
     return out
 
 
@@ -165,17 +180,20 @@ def _frame_envelope(raw: np.ndarray | None) -> bytes:
     if raw is None:
         return bytes(slot)
     payload = np.ascontiguousarray(raw, dtype=np.uint8).reshape(-1)
-    if int(payload.size) > ENVELOPE_SLOT - 3:
-        raise ValueError("envelope does not fit in the 512-byte slot")
-    compressed = _COMPRESSOR.compress(payload.tobytes())
-    use_zstd = len(compressed) > 0 and len(compressed) < int(payload.size)
+    raw_bytes = payload.tobytes()
+    compressed = _COMPRESSOR.compress(raw_bytes)
+    use_zstd = len(compressed) > 0 and len(compressed) < len(raw_bytes)
     use_zstd = use_zstd and len(compressed) <= ENVELOPE_SLOT - 3
     if use_zstd:
         body = compressed
         codec = 0
-    else:
-        body = payload.tobytes()
+    elif len(raw_bytes) <= ENVELOPE_SLOT - 3:
+        body = raw_bytes
         codec = 1
+    else:
+        raise ValueError(
+            f"envelope ({len(raw_bytes)} B raw, {len(compressed)} B zstd) does not fit in the 512-byte slot"
+        )
     slot[0:3] = _U16B.pack(len(body), codec)
     slot[3 : 3 + len(body)] = body
     return bytes(slot)
@@ -203,6 +221,7 @@ def pack_bytes(
     stage: int = 1,
     pad_slots: int | None = None,
     tail_bytes: int = 0,
+    include_envelope: bool | None = None,
 ) -> bytes:
     if method not in METHOD_ID:
         raise KeyError(method)
@@ -233,8 +252,9 @@ def pack_bytes(
     padded = np.zeros((n_blocks * BLOCK_TOKENS, width), dtype=np.uint8)
     if count:
         padded[:count] = tokens
-    flags = 1 if method == "B4" else 0
-    env_slot = ENVELOPE_SLOT if method == "B4" else 0
+    has_env = _has_envelope(method, include_envelope)
+    flags = 1 if has_env else 0
+    env_slot = ENVELOPE_SLOT if has_env else 0
     header = _HEADER.pack(
         MAGIC,
         1,
@@ -263,19 +283,30 @@ def pack_bytes(
     parts = [header]
     if env_slot:
         parts.append(_frame_envelope(envelope))
-    for block_i in range(n_blocks):
-        chunk = padded[block_i * BLOCK_TOKENS : (block_i + 1) * BLOCK_TOKENS]
-        n_valid = int(min(BLOCK_TOKENS, max(0, count - block_i * BLOCK_TOKENS)))
-        n_pad = BLOCK_TOKENS - n_valid if explicit_pad else 0
-        if n_pad:
-            chunk[n_valid:] = np.uint8(PAD_BYTE)
-        if width >= 4 and n_valid > 0:
-            first = int(_U32.unpack(bytes(chunk[0, :4]))[0])
+    if n_blocks > 0:
+        bsize = block_size(width)
+        padded_3d = padded.reshape(n_blocks, BLOCK_TOKENS, width)
+        block_ids = np.arange(n_blocks, dtype=np.int64)
+        n_valid = np.clip(count - block_ids * BLOCK_TOKENS, 0, BLOCK_TOKENS)
+        if explicit_pad:
+            n_pad = BLOCK_TOKENS - n_valid
+            pad_mask = np.arange(BLOCK_TOKENS, dtype=np.int64)[None, :] >= n_valid[:, None]
+            if np.any(pad_mask):
+                padded_3d[pad_mask] = np.uint8(PAD_BYTE)
         else:
-            first = 0
-        reserved = bytes((n_pad, PAD_BYTE)) if n_pad else b"\x00\x00"
-        parts.append(_BLOCK.pack(_low(first, 32), n_valid, reserved))
-        parts.append(chunk.tobytes())
+            n_pad = np.zeros(n_blocks, dtype=np.int64)
+        blocks = np.zeros((n_blocks, bsize), dtype=np.uint8)
+        if width >= 4:
+            has_first = n_valid > 0
+            if np.any(has_first):
+                blocks[has_first, 0:4] = padded_3d[has_first, 0, 0:4]
+        blocks[:, 4:6] = n_valid.astype(np.dtype("<u2")).view(np.uint8).reshape(n_blocks, 2)
+        if explicit_pad:
+            has_pad = n_pad > 0
+            blocks[has_pad, 6] = n_pad[has_pad].astype(np.uint8)
+            blocks[has_pad, 7] = np.uint8(PAD_BYTE)
+        blocks[:, BLOCK_HDR:] = padded_3d.reshape(n_blocks, BLOCK_TOKENS * width)
+        parts.append(blocks.tobytes())
     if tail_bytes:
         parts.append(bytes([PAD_BYTE]) * tail_bytes)
     return b"".join(parts)
@@ -305,25 +336,22 @@ def unpack_bytes(blob: bytes) -> dict:
     bsize = block_size(width)
     available = (block_end - cursor) // bsize if bsize else 0
     n_parse = min(n_blocks, int(available))
-    chunks = []
     pad_tokens = 0
-    for _ in range(n_parse):
-        n_valid = int(_U16.unpack_from(blob, cursor + 4)[0])
-        n_valid = min(max(n_valid, 0), BLOCK_TOKENS)
-        pad_count = int(blob[cursor + 6])
-        pad_mark = int(blob[cursor + 7])
-        if pad_mark != PAD_BYTE:
-            pad_count = 0
-        pad_count = min(max(pad_count, 0), BLOCK_TOKENS - n_valid)
-        raw = np.frombuffer(
-            blob, dtype=np.uint8, count=BLOCK_TOKENS * width, offset=cursor + BLOCK_HDR
-        ).copy()
-        if n_valid:
-            chunks.append(raw.reshape(BLOCK_TOKENS, width)[:n_valid])
-        pad_tokens += pad_count
-        cursor += bsize
-    if chunks:
-        tokens = np.concatenate(chunks, axis=0)
+    if n_parse > 0:
+        view_2d = np.frombuffer(blob, dtype=np.uint8, count=n_parse * bsize, offset=cursor).reshape(n_parse, bsize)
+        n_valids = np.ascontiguousarray(view_2d[:, 4:6]).view(np.dtype("<u2")).reshape(n_parse).astype(np.int64)
+        n_valids = np.clip(n_valids, 0, BLOCK_TOKENS)
+        pad_counts = np.where(view_2d[:, 7] == PAD_BYTE, view_2d[:, 6].astype(np.int64), 0)
+        pad_counts = np.clip(pad_counts, 0, BLOCK_TOKENS - n_valids)
+        pad_tokens = int(pad_counts.sum())
+        payload_3d = view_2d[:, BLOCK_HDR:].reshape(n_parse, BLOCK_TOKENS, width)
+        if np.all(n_valids == BLOCK_TOKENS):
+            tokens = payload_3d.reshape(n_parse * BLOCK_TOKENS, width).copy()
+        else:
+            slot_mask = np.arange(BLOCK_TOKENS, dtype=np.int64)[None, :] < n_valids[:, None]
+            tokens = payload_3d[slot_mask].copy()
+            if tokens.size == 0:
+                tokens = np.zeros((0, width), dtype=np.uint8)
     else:
         tokens = np.zeros((0, width), dtype=np.uint8)
     return {

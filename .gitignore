@@ -5,15 +5,35 @@ __pycache__/
 .ruff_cache/
 *.egg-info/
 
-# Local checkouts. Hashes stay in refs/COMMITS.txt.
+# Local reference checkouts (commit hashes kept in refs/COMMITS.txt).
 refs/*
 !refs/COMMITS.txt
 
-# Run artifacts. Keep the directory markers.
+# Heavy run artifacts and raw data (never commit caches or datasets).
+cache/
 outputs/*
 !outputs/.gitkeep
 *.pth
 *.pt
 *.ckpt
 *.npy
+*.npz
 *.pcd
+
+# LaTeX intermediate build artifacts (keep main.tex, main.pdf, references.bib, main.bbl).
+paper/*.aux
+paper/*.blg
+paper/*.log
+paper/*.out
+paper/*.spl
+paper/*.toc
+paper/*.fls
+paper/*.fdb_latexmk
+paper/pdflatex*.log
+paper/bibtex.log
+
+# Archival planning drafts & early 1-scene pilot figures (keep local, exclude from public GitHub release).
+others/
+paper/figures_real_pilot/
+paper/figures/gen_pilot_figures.py
+tools/run_real_pilot.py

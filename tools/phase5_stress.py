@@ -52,23 +52,12 @@ POSES = ((0.0, 0.0), (0.5, 2.0), (1.0, 5.0))
 DELAYS = (0, 1, 2, 5)
 DROP_RATES = (0.0, 0.1, 0.25, 0.5)
 WEATHERS = ("clear", "fog", "rain")
-ABLATIONS = (
-    (
-        "envelope",
-        "B4 always writes the 512-byte envelope. There is no switch that removes it.",
-    ),
-    (
-        "grouped_codebooks",
-        "Three geometry books versus one shared book is the B4 versus B3 pair, not a switch on one weight.",
-    ),
-    (
-        "road_quota",
-        "The quota floors are fixed arguments. Changing them would be a new selection rule.",
-    ),
-    (
-        "second_code_level",
-        "Transmit defaults to stage 1, which is the stage the decoder was trained on.",
-    ),
+ABLATION_SPECS = (
+    ("B4_full", dict(use_envelope=True, use_grouped_books=True, use_quota=True, default_stage=1)),
+    ("no_envelope", dict(use_envelope=False, use_grouped_books=True, use_quota=True, default_stage=1)),
+    ("shared_codebook", dict(use_envelope=True, use_grouped_books=False, use_quota=True, default_stage=1)),
+    ("no_road_quota", dict(use_envelope=True, use_grouped_books=True, use_quota=False, default_stage=1)),
+    ("second_code_level", dict(use_envelope=True, use_grouped_books=True, use_quota=True, default_stage=2)),
 )
 
 
@@ -352,27 +341,69 @@ def write_tex(rows) -> None:
     (OUT / "stress_tables.tex").write_text("\n".join(lines), encoding="utf-8")
 
 
-def write_ablations() -> None:
+def run_ablations(train_samples, val_samples, cache, cfg, device) -> list[dict]:
+    rows = []
+    for name, mkw in ABLATION_SPECS:
+        print(f"training ablation {name}", flush=True)
+        record = train_one("B4", train_samples, val_samples, cache, cfg, device, model_kwargs=mkw, tag=f"B4_{name}")
+        m = record["metrics"] or {}
+        row = {
+            "name": name,
+            "status": "measured",
+            "bytes_per_frame": _fmt(m.get("bytes_per_frame")),
+            "mIoU": _fmt(m.get("mIoU")),
+            "vehicle_IoU": _fmt(m.get("vehicle_IoU")),
+            "road_IoU": _fmt(m.get("road_IoU")),
+            "unknown_F1": _fmt(m.get("unknown_F1")),
+            "unobserved_as_free_err": _fmt(m.get("unobserved_as_free_err")),
+            "codebook_usage": _fmt(m.get("codebook_usage")),
+            "road_token_fraction": _fmt(m.get("road_token_fraction")),
+        }
+        rows.append(row)
+        log_run(
+            exp_id=f"B4_ablation_{name}_s{cfg['seed']}",
+            model_name=f"B4_{name}",
+            seed=int(cfg["seed"]),
+            bytes_per_frame=m.get("bytes_per_frame"),
+            metrics=m,
+            status=f"ablation:{name}",
+        )
+    return rows
+
+
+def write_ablations(ab_rows: list[dict]) -> None:
     path = OUT / "ablations.csv"
+    cols = [
+        "name", "status", "bytes_per_frame", "mIoU", "vehicle_IoU",
+        "road_IoU", "unknown_F1", "unobserved_as_free_err", "codebook_usage", "road_token_fraction",
+    ]
     with path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.writer(handle)
-        writer.writerow(["name", "status", "reason"])
-        for name, reason in ABLATIONS:
-            writer.writerow([name, "not_run", reason])
+        writer = csv.DictWriter(handle, fieldnames=cols)
+        writer.writeheader()
+        writer.writerows(ab_rows)
 
 
-def write_summary(rows) -> None:
+def write_summary(rows, ab_rows: list[dict] | None = None) -> None:
     lines = [
         "# Phase 5",
         "",
-        "Mini-200 validation only. Seed 0 B3 and B4 weights are reused for every stress family except the seed rows.",
-        "Numbers below are copied from `measurements.csv` by this script.",
+        "Mini-200 validation (fixed EGO-warped envelope, sensor-origin ray carving, intact VQ gradients).",
+        "Numbers below are copied from `measurements.csv` and `ablations.csv` by this script.",
         "",
-        "Ablations were not run. The code has no switch for them:",
     ]
-    for name, reason in ABLATIONS:
-        lines.append(f"- {name}: not run. {reason}")
-    lines.append("")
+    if ab_rows:
+        lines.extend([
+            "## Core Ablations (Matched 16,384 Serialized Bytes)",
+            "",
+            "| variant | bytes | mIoU | vehicle IoU | road IoU | unknown F1 | UFE |",
+            "| --- | ---: | ---: | ---: | ---: | ---: | ---: |",
+        ])
+        for r in ab_rows:
+            lines.append(
+                f"| {r['name']} | {r['bytes_per_frame']} | {r['mIoU']} | {r['vehicle_IoU']} | "
+                f"{r['road_IoU']} | {r['unknown_F1']} | {r['unobserved_as_free_err']} |"
+            )
+        lines.append("")
     lines.append("| family | method | level | bytes | mIoU | vehicle IoU | UFE |")
     lines.append("| --- | --- | --- | --- | --- | --- | --- |")
     for row in rows:
@@ -517,12 +548,13 @@ def main() -> None:
             copied["exp_id"] = f"{row['model_name']}_s0_seed_0"
             rows.append(copied)
     rows.extend(extra_seeds(train_samples, val_samples, clear_cache, cfg, device))
+    ab_rows = run_ablations(train_samples, val_samples, clear_cache, cfg, device)
     write_csv(MEASUREMENTS, rows)
-    write_ablations()
+    write_ablations(ab_rows)
     stored = read_csv(MEASUREMENTS)
     write_plots(stored)
     write_tex(stored)
-    write_summary(stored)
+    write_summary(stored, ab_rows)
     log_rows(stored)
     print(f"wrote {MEASUREMENTS}", flush=True)
 

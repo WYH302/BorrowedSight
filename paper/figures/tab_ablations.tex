@@ -1,0 +1,19 @@
+% Cells copied verbatim from outputs/phase5/ablations.csv.
+\begin{table}[t]
+\centering
+\caption{Synthetic Mini-200 core ablations at matched 16,384-byte serialized packets (fixed coordinate-warped envelope and intact VQ gradients).}
+\label{tab:ablations}
+\scriptsize
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{lllllll}
+\toprule
+variant & bytes & mIoU & vehicle IoU & road IoU & unknown F1 & UFE \\
+\midrule
+B4\_full & 16384 & 0.58135053 & 0.60779025 & 0.64070693 & 0.97254069 & 0.022242667 \\
+no\_envelope & 16384 & 0.56986628 & 0.60542152 & 0.66970107 & 0.97155258 & 0.026185341 \\
+shared\_codebook & 16384 & 0.50859134 & 0.58302259 & 0.57515125 & 0.97000444 & 0.017070616 \\
+no\_road\_quota & 16384 & 0.60966261 & 0.62722085 & 0.68629157 & 0.97301941 & 0.02967842 \\
+second\_code\_level & 16384 & 0.58084908 & 0.65822108 & 0.4800694 & 0.97174034 & 0.031599613 \\
+\bottomrule
+\end{tabular}
+\end{table}

@@ -8,16 +8,16 @@ from borrowedsight.packer import TOKEN_BYTES, morton3, token_width
 
 
 def demorton3(code: np.ndarray) -> np.ndarray:
-    """Inverse of packer.morton3 for 7-bit x, 7-bit y, 3-bit z."""
-    packed = np.asarray(code, dtype=np.uint64)
-    x = np.zeros(packed.shape, dtype=np.uint64)
-    y = np.zeros(packed.shape, dtype=np.uint64)
-    z = np.zeros(packed.shape, dtype=np.uint64)
+    """Inverse of packer.morton3 for 7-bit x, 7-bit y, 3-bit z (bit-shift vectorized)."""
+    packed = np.asarray(code, dtype=np.uint32)
+    x = np.zeros(packed.shape, dtype=np.uint32)
+    y = np.zeros(packed.shape, dtype=np.uint32)
+    z = np.zeros(packed.shape, dtype=np.uint32)
     for bit in range(7):
-        x = x + ((packed // np.uint64(2 ** (3 * bit))) % np.uint64(2)) * np.uint64(2 ** bit)
-        y = y + ((packed // np.uint64(2 ** (3 * bit + 1))) % np.uint64(2)) * np.uint64(2 ** bit)
+        x |= ((packed >> np.uint32(3 * bit)) & np.uint32(1)) << np.uint32(bit)
+        y |= ((packed >> np.uint32(3 * bit + 1)) & np.uint32(1)) << np.uint32(bit)
     for bit in range(3):
-        z = z + ((packed // np.uint64(2 ** (3 * bit + 2))) % np.uint64(2)) * np.uint64(2 ** bit)
+        z |= ((packed >> np.uint32(3 * bit + 2)) & np.uint32(1)) << np.uint32(bit)
     return np.stack((x, y, z), axis=-1).astype(np.int64)
 
 

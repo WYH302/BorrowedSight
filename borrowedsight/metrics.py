@@ -92,10 +92,18 @@ def new_counts() -> dict:
         "unk_tp": 0.0,
         "unk_fp": 0.0,
         "unk_fn": 0.0,
+        "unc_sum": 0.0,
+        "unc_cnt": 0.0,
+        "unc_unk_sum": 0.0,
+        "unc_unk_cnt": 0.0,
+        "unc_obs_sum": 0.0,
+        "unc_obs_cnt": 0.0,
+        "pred_unk_frac_sum": 0.0,
+        "n_frames": 0.0,
     }
 
 
-def update_counts(acc: dict, pred_sem, pred_tri, gt_sem, gt_tri) -> None:
+def update_counts(acc: dict, pred_sem, pred_tri, gt_sem, gt_tri, tri_probs=None) -> None:
     pred_sem = np.asarray(pred_sem)
     pred_tri = np.asarray(pred_tri)
     gt_sem = np.asarray(gt_sem)
@@ -103,12 +111,17 @@ def update_counts(acc: dict, pred_sem, pred_tri, gt_sem, gt_tri) -> None:
     gt_target = semantic_target(gt_sem, gt_tri)
     region = gt_target != IGNORE_INDEX
     claims = pred_tri != UNKNOWN
-    for cls in range(N_CLASS):
-        gt_c = region & (gt_target == cls)
-        pred_c = claims & region & (pred_sem == cls)
-        acc["gt"][cls] += float(np.count_nonzero(gt_c))
-        acc["pred"][cls] += float(np.count_nonzero(pred_c))
-        acc["inter"][cls] += float(np.count_nonzero(gt_c & pred_c))
+    gt_reg = gt_target[region]
+    if gt_reg.size:
+        acc["gt"] += np.bincount(gt_reg, minlength=N_CLASS)[:N_CLASS]
+        cr = claims & region
+        if np.any(cr):
+            ps_cr = pred_sem[cr]
+            gt_cr = gt_target[cr]
+            acc["pred"] += np.bincount(ps_cr, minlength=N_CLASS)[:N_CLASS]
+            hit = ps_cr == gt_cr
+            if np.any(hit):
+                acc["inter"] += np.bincount(gt_cr[hit], minlength=N_CLASS)[:N_CLASS]
     unk = gt_tri == UNKNOWN
     pred_unk = pred_tri == UNKNOWN
     acc["ufe_num"] += float(np.count_nonzero((pred_tri == FREE) & unk))
@@ -116,6 +129,19 @@ def update_counts(acc: dict, pred_sem, pred_tri, gt_sem, gt_tri) -> None:
     acc["unk_tp"] += float(np.count_nonzero(pred_unk & unk))
     acc["unk_fp"] += float(np.count_nonzero(pred_unk & ~unk))
     acc["unk_fn"] += float(np.count_nonzero(~pred_unk & unk))
+    acc["pred_unk_frac_sum"] += float(np.mean(pred_unk))
+    acc["n_frames"] += 1.0
+    if tri_probs is not None:
+        probs = np.clip(np.asarray(tri_probs, dtype=np.float64), 1e-7, 1.0)
+        # Normalized tri-state entropy in [0, 1] plus P(Unknown) risk score
+        ent = -np.sum(probs * np.log(probs), axis=0) / np.log(3.0)
+        risk = 0.5 * ent + 0.5 * probs[0]
+        acc["unc_sum"] += float(risk.sum())
+        acc["unc_cnt"] += float(risk.size)
+        acc["unc_unk_sum"] += float(risk[unk].sum())
+        acc["unc_unk_cnt"] += float(np.count_nonzero(unk))
+        acc["unc_obs_sum"] += float(risk[~unk].sum())
+        acc["unc_obs_cnt"] += float(np.count_nonzero(~unk))
 
 
 def finalize_counts(acc: dict) -> dict:
@@ -135,7 +161,7 @@ def finalize_counts(acc: dict) -> dict:
         recall = acc["unk_tp"] / (acc["unk_tp"] + acc["unk_fn"])
         unknown_f1 = 0.0 if precision + recall == 0 else 2 * precision * recall / (precision + recall)
     ufe = None if acc["ufe_den"] <= 0 else acc["ufe_num"] / acc["ufe_den"]
-    return {
+    out = {
         "mIoU": float(np.mean(ious)) if ious else None,
         "vehicle_IoU": per_class.get(VEHICLE),
         "road_IoU": per_class.get(ROAD),
@@ -143,7 +169,13 @@ def finalize_counts(acc: dict) -> dict:
         "unobserved_as_free_err": None if ufe is None else float(ufe),
         "n_classes_present": len(ious),
         "per_class_iou": per_class,
+        "pred_unknown_frac": _safe_div(acc["pred_unk_frac_sum"], acc["n_frames"]),
     }
+    if acc["unc_cnt"] > 0:
+        out["mean_uncertainty"] = float(acc["unc_sum"] / acc["unc_cnt"])
+        out["uncertainty_on_unknown"] = _safe_div(acc["unc_unk_sum"], acc["unc_unk_cnt"])
+        out["uncertainty_on_observed"] = _safe_div(acc["unc_obs_sum"], acc["unc_obs_cnt"])
+    return out
 
 
 def mbps_from_bytes(bytes_per_frame: float, hz: float = 10.0) -> float:

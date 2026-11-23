@@ -78,6 +78,7 @@ def step_loss(model, sample, senders, n_tokens, device, budget):
                 int(sample["receiver_id"]),
                 n_tokens,
                 budget=budget,
+                serialize=False,
             )
         )
     blobs = [item["blob"] for item in sent if item["blob"]]
@@ -140,23 +141,30 @@ def evaluate(model, samples, cache, n_tokens, device, budget):
     metrics["bytes_per_frame"] = float(np.mean(sizes)) if sizes else 0.0
     metrics["bytes_min"] = float(np.min(sizes)) if sizes else 0.0
     metrics["bytes_max"] = float(np.max(sizes)) if sizes else 0.0
-    metrics["codebook_usage"] = _usage(model.method, codes, classes, model.codebook_size)
+    metrics["codebook_usage"] = _usage(
+        model.method, codes, classes, model.codebook_size, grouped=model.use_grouped_books
+    )
     metrics["road_token_fraction"] = _road_fraction(classes)
     return metrics
 
 
-def _usage(method, codes, classes, codebook_size: int):
+def _usage(method, codes, classes, codebook_size: int, grouped: bool = True):
     if method not in {"B3", "B4"} or not codes:
         return None
     code = np.concatenate(codes)
     cls = np.concatenate(classes)
-    groups = [None] if method == "B3" else [THINGS, GROUND, VERTICAL]
+    if method == "B4" and grouped:
+        groups = [THINGS, GROUND, VERTICAL]
+        denom = float(codebook_size)
+    else:
+        groups = [None]
+        denom = float(codebook_size * (3 if (method == "B4" and not grouped) else 1))
     used = []
     for group in groups:
         mask = np.ones(len(code), dtype=bool) if group is None else np.isin(cls, group)
         if not np.any(mask):
             continue
-        used.append(len(np.unique(code[mask])) / float(codebook_size))
+        used.append(len(np.unique(code[mask])) / denom)
     if not used:
         return None
     return float(np.mean(used))
@@ -171,19 +179,26 @@ def _road_fraction(classes) -> float | None:
     return float(np.mean(cls == 5))
 
 
-def train_one(method, train_samples, val_samples, cache, cfg, device):
+def train_one(method, train_samples, val_samples, cache, cfg, device, model_kwargs=None, tag=None):
     set_seed(int(cfg["seed"]))
-    model = BorrowedSight(method, feat_dim=int(cfg["feat_dim"]), codebook_size=int(cfg["codebook_size"])).to(device)
+    mkw = dict(model_kwargs or {})
+    model = BorrowedSight(method, feat_dim=int(cfg["feat_dim"]), codebook_size=int(cfg["codebook_size"]), **mkw).to(device)
     ckpt = torch.load(CHECKPOINTS / "sender_mini.pt", map_location=device, weights_only=False)
     model.encoder.load_state_dict(ckpt["encoder"])
     for param in model.encoder.parameters():
         param.requires_grad = False
     params = [param for param in model.parameters() if param.requires_grad]
     opt = torch.optim.AdamW(params, lr=float(cfg["lr"]), weight_decay=1e-4)
-    budget = packet_layout(method, int(cfg.get("fair_bytes", FAIR_BUDGET_BYTES)))
+    budget = packet_layout(
+        method,
+        int(cfg.get("fair_bytes", FAIR_BUDGET_BYTES)),
+        stage=model.default_stage,
+        include_envelope=model.use_envelope,
+    )
     n_tokens = int(budget["n_tokens"])
+    label = tag or method
     print(
-        f"{method} token budget {n_tokens} serialized {budget['serialized']} tail {budget['tail']}",
+        f"{label} token budget {n_tokens} serialized {budget['serialized']} tail {budget['tail']}",
         flush=True,
     )
     keys = list(train_samples)
@@ -225,14 +240,14 @@ def train_one(method, train_samples, val_samples, cache, cfg, device):
                     status = "loss_dropped"
                     break
             if step % 10 == 0:
-                print(f"{method} step {step} loss {losses[-1]:.4f}", flush=True)
+                print(f"{label} step {step} loss {losses[-1]:.4f}", flush=True)
     else:
         status = "no_communication"
     metrics = None
     if status != "nan":
         metrics = evaluate(model, val_samples, cache, n_tokens, device, budget)
     record = {
-        "method": method,
+        "method": label,
         "status": status,
         "steps": step,
         "n_tokens": n_tokens,
@@ -240,10 +255,10 @@ def train_one(method, train_samples, val_samples, cache, cfg, device):
         "losses": losses[-20:],
         "metrics": metrics,
     }
-    payload = {"model": model.state_dict(), "method": method, "status": status, "seed": int(cfg["seed"])}
-    torch.save(payload, CHECKPOINTS / f"{method}_mini_seed{int(cfg['seed'])}.pt")
+    payload = {"model": model.state_dict(), "method": method, "model_kwargs": mkw, "status": status, "seed": int(cfg["seed"])}
+    torch.save(payload, CHECKPOINTS / f"{label}_mini_seed{int(cfg['seed'])}.pt")
     if int(cfg["seed"]) == 0:
-        torch.save(payload, CHECKPOINTS / f"{method}_mini.pt")
+        torch.save(payload, CHECKPOINTS / f"{label}_mini.pt")
     return record
 
 

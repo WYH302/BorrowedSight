@@ -1,0 +1,743 @@
+\documentclass[final,5p,times,twocolumn]{elsarticle}
+
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage[table]{xcolor}
+\usepackage{array}
+\usepackage[ruled,vlined,linesnumbered]{algorithm2e}
+\usepackage[hidelinks,pdfencoding=auto]{hyperref}
+
+\definecolor{oursrow}{RGB}{236,244,251}
+\renewcommand{\topfraction}{0.92}
+\renewcommand{\bottomfraction}{0.85}
+\renewcommand{\textfraction}{0.07}
+\renewcommand{\floatpagefraction}{0.82}
+\renewcommand{\dbltopfraction}{0.92}
+\renewcommand{\dblfloatpagefraction}{0.82}
+\setcounter{topnumber}{3}
+\setcounter{dbltopnumber}{3}
+\setcounter{totalnumber}{5}
+\journal{Vehicular Communications}
+
+\begin{document}
+
+\begin{frontmatter}
+
+\title{BorrowedSight: Category-Geometry Token Communication and Visibility Envelopes for Zero-Ego-Observation Cooperative 3D Semantic Occupancy}
+
+\author[scnu]{Yonghao Wu\corref{cor1}}
+\ead{yonghaowu369@gmail.com}
+\cortext[cor1]{First author and corresponding author.}
+\affiliation[scnu]{
+  organization={School of Electronic Science and Engineering (School of Microelectronics), South China Normal University},
+  city={Foshan},
+  state={Guangdong},
+  country={China}
+}
+
+\begin{abstract}
+Connected automated vehicles navigating urban corridors routinely share the road with legacy or sensor-degraded vehicles that retain 6-DoF localization and V2X radios yet possess zero functional onboard perception sensors. Existing cooperative 3D semantic occupancy systems break down in this zero-ego-observation regime because they rely on active ego camera or LiDAR backbones, allocate monolithic shared codebooks that let abundant planar road voxels crowd out dynamic obstacles, and conflate unobserved blind space with verified free space. This paper introduces BorrowedSight, a pure-PyTorch, receiver-centric cooperative 3D semantic occupancy framework engineered strictly for zero-ego-observation V2X links. Neighboring LiDAR-equipped vehicles extract voxel features and six local geometric moments, enforce category-balanced token quotas, and factorize every transmitted token into an explicit 1-byte discrete semantic anchor plus a geometry-group residual vector quantized by three specialized ResidualSimVQ codebooks (Things, Ground, and Vertical Static). Packets organize anchors into loss-resilient 16-token Morton micro-blocks paired with a fixed 512-byte Zstandard-compressed $20\times 20$ or $25\times 25$ coarse visibility envelope that explicitly separates observed free corridors from occluded blind volumes at exact 0.0\% byte discrepancy, while multi-budget random training enables single-model adaptation across 2--32~KB links. Across 25 disjoint multi-sender real OPV2V and Semantic-OPV2V scenes (2,383 frames, 2--5 CAVs), BorrowedSight achieves $0.4133 \pm 0.0014$ held-out test mIoU and $0.4848 \pm 0.0031$ vehicle IoU at 32,768~B (2.62~Mbps at 10~Hz), surpassing equal-byte sparse continuous (0.2419), projected continuous (0.3611), and shared-VQ ($0.3742 \pm 0.0121$) baselines using only 2.34M parameters (+0.053\% over shared VQ) and 15.22~GFLOPs. At half bandwidth (16,384~B), BorrowedSight attains 0.3863~mIoU and 0.4898 vehicle IoU, beating the 32~KB shared-VQ baseline at half the wireless rate, and multi-budget training reaches 0.3472~mIoU at just 8,192~B (0.66~Mbps)---surpassing published 4-camera ego-equipped CoHFF (0.3416) with zero ego sensors. Scene-grouped 5-fold cross-validation across all 25 disjoint scenes confirms statistically significant wins on all 10/10 paired fold comparisons ($p = 0.0023$ at 16~KB, $p = 0.0430$ at 32~KB). Vectorized inference runs at 9.20~ms (108.8~FPS) for one sender and 30.98~ms (32.3~FPS) for four simultaneous senders at 189~MB peak VRAM on a single RTX~3090, while sustaining robust reconstruction and $>2\times$ blind-zone risk separation under LISA fog, rain, latency, pose noise, and 50\% micro-block loss. Reproducible code and protocol audits will be released at \texttt{https://github.com/WYH302/BorrowedSight}.
+\end{abstract}
+
+\begin{highlights}
+\item Formalizes strict zero-ego cooperative 3D semantic occupancy over V2X links.
+\item Factorizes tokens into class embeddings plus 3-group residual SimVQ geometry codes.
+\item Fixed 512-byte Zstd 25x25 visibility envelopes fit zero extra wire bytes.
+\item Beats all equal-byte baselines on 25-scene OPV2V (5-fold CV p=0.0023 at 16 KB).
+\item Vectorized pure-PyTorch inference hits 108.8 FPS (1 sender) and 32.3 FPS (4 senders).
+\end{highlights}
+
+\begin{keyword}
+Cooperative perception \sep V2X communications \sep 3D semantic occupancy \sep Residual vector quantization \sep Visibility-aware fusion \sep Autonomous vehicles
+\end{keyword}
+
+\end{frontmatter}
+
+\section{Introduction}
+
+Mixed-autonomy traffic will define urban roadways for decades. Vehicles equipped with multi-beam LiDAR and onboard compute routinely share congested corridors with lower-cost legacy vehicles or connected vehicles whose cameras and LiDAR units suffer sudden mud, lens icing, dense fog, or hardware failure~\cite{bijelic2020fog,kilic2021lisa,etsi2023cpm}. Whenever an ego vehicle loses local environmental sensing yet retains 6-DoF localization and a vehicle-to-everything (V2X) transceiver, neighboring connected automated vehicles (CAVs) become its sole source of spatial awareness. Reconstructing a dense, receiver-centric 3D semantic occupancy grid purely from neighbor transmissions within practical wireless budgets (0.66--2.62~Mbps at 10~Hz) is therefore a core vehicular communication and operational-safety challenge.
+
+Existing cooperative perception systems fail structurally in this zero-ego-observation regime for three coupled reasons. First, feature-fusion architectures such as F-Cooper~\cite{chen2019fcooper}, V2VNet~\cite{wang2020v2vnet}, V2X-ViT~\cite{xu2022v2xvit}, and CoBEVT~\cite{xu2022cobevt}, as well as collaborative 3D occupancy frameworks such as CoHFF~\cite{song2024cohff}, Co3SOP~\cite{wu2025co3sop}, and VQSOP~\cite{li2026vqsop}, depend on an active ego perception tower that anchors local geometry and free space. Neighbor streams act merely as auxiliary context. Stripped of ego sensors, dense floating-point feature broadcasts saturate V2X links, whereas standardized object-level collective perception messages (ETSI CPM)~\cite{etsi2023cpm} discard road topology, curbs, guardrails, and drivable free corridors.
+
+Second, existing discrete V2X tokenizers suffer semantic-geometric interference under tight packet budgets. Codebook compressors such as CodeFilling~\cite{hu2024codefilling} and shared sparse vector-quantized occupancy models~\cite{li2026vqsop} map all 3D semantic classes into a single monolithic codebook without category quotas. In real LiDAR sweeps, abundant planar road voxels consume an outsized share of wire slots while diverse vertical structures (buildings, poles, vegetation, signs, and vehicles) compete for the same finite prototype pool, degrading minority-class recall and amplifying training variance.
+
+Third, and most critically for downstream planning safety, sparse anchor messaging conflates \textit{unobserved blind volume} with \textit{observed free space}. Transmitting only occupied surface tokens leaves every unreceived voxel in a zero-ego receiver grid geometrically ambiguous: a cell may be empty because a neighbor laser ray traversed it cleanly, or because an occluding truck, heavy fog attenuation, or a dropped wireless block prevented any ray from ever sampling it. Decoders trained under standard empty-versus-occupied supervision paint occluded blind zones as confident free space, creating silent collision hazards.
+
+To resolve all three bottlenecks within one bandwidth-disciplined wire protocol, we present \textbf{BorrowedSight}, a lightweight pure-PyTorch framework for zero-ego-observation cooperative 3D semantic occupancy. Rather than inflating backbone capacity, BorrowedSight redesigns what information enters every wire byte under identical encoder and decoder networks. Each LiDAR-equipped neighbor extracts voxel semantics and six local geometric descriptors, applies category-balanced token quotas that protect dynamic vehicles and vertical structures from road-token crowding, and factorizes each transmitted anchor into an explicit 1-byte semantic class embedding plus a geometry-group residual vector quantized via three specialized ResidualSimVQ codebooks (Things, Ground, and Vertical Static)~\cite{zhu2025simvq,fifty2025rotation}. Crucially, because the 1-byte class identifier already travels on the wire to index the group codebook, adding an explicit 208-parameter class embedding at the receiver incurs \textit{zero extra wire bits} yet eliminates inter-class codebook interference, raising held-out building IoU by $38\times$--$42\times$ and overall mIoU by over 4 percentage points.
+
+Selected anchors are packed into self-contained 16-token Morton micro-blocks so wireless block loss never corrupts surviving blocks, alongside a fixed 512-byte Zstandard-compressed $20\times 20$ or $25\times 25$ coarse visibility envelope derived strictly from neighbor LiDAR ray traversal. On the receiver side, the zero-ego decoder accepts strictly ego pose, timestamp, ego motion, and serialized packets, backward-warping each sender's coarse visibility envelope into ego coordinates via exact $\mathrm{SE}(3)$ geometry and predicting a 12-class semantic volume, explicit tri-state occupancy (\textit{Unknown}, \textit{Observed Free}, \textit{Occupied}), and calibrated epistemic risk. Pairing this wire protocol with multi-budget random training (4--32~KB) allows a single checkpoint to operate smoothly across severe channel congestion without retraining.
+
+The primary contributions of this work are as follows:
+\begin{itemize}
+\item \textbf{Strict Zero-Ego Cooperative Occupancy Formulation and Audit Suite:} We formalize zero-ego-observation cooperative 3D semantic occupancy, construct causal sender-ray tri-state ground truth separating verified free corridors from unobserved blind volumes, and verify non-leakage through six automated invariants across both synthetic and real OPV2V streams.
+\item \textbf{Category-Geometry Factorized Micro-Block Protocol with $25\times 25$ Zstd Visibility Envelopes:} We design an equalized-byte protocol coupling discrete semantic embeddings with three geometry-grouped ResidualSimVQ codebooks, category-balanced quotas, loss-resilient 16-token Morton micro-blocks, and a fixed 512-byte Zstandard visibility slot supporting $25\times 25$ spatial resolution at zero extra wire bytes and only +1,232 parameters (+0.053\%) over shared VQ.
+\item \textbf{Comprehensive Multi-Scene Evaluation and Scene-Grouped 5-Fold Cross-Validation:} Across 25 disjoint multi-sender real OPV2V and Semantic-OPV2V scenes (2,383 frames, 2--5 CAVs) and the 3-sender Mini-200 benchmark, BorrowedSight beats all equal-byte baselines at 32~KB and 16~KB, achieves statistically significant 10/10 wins across scene-grouped 5-fold cross-validation ($p = 0.0023$ at 16~KB, $p = 0.0430$ at 32~KB), and matches 4-camera ego-equipped CoHFF at just 8~KB (0.66~Mbps) using zero ego sensors.
+\item \textbf{Real-Time Vectorized Pure-PyTorch Deployment and End-to-End V2X Resilience:} Eliminating host-device synchronizations yields 9.20~ms (108.8~FPS) single-sender and 30.98~ms (32.3~FPS) four-sender serialized throughput within 189~MB peak VRAM on one RTX~3090 without custom CUDA extensions, while sustaining smooth degradation and $>2\times$ blind-zone risk separation under LISA physical fog/rain, latency, pose error, and 50\% block loss.
+\end{itemize}
+
+\section{Related Work}
+
+Building on the operational motivation above, we review four research lines governing zero-ego-observation V2X occupancy: bandwidth-constrained cooperative perception, 3D semantic occupancy prediction, discrete vector-quantized communication, and visibility-aware mapping under adverse weather.
+
+\subsection{Cooperative Perception and V2X Communication}
+
+Cooperative perception extends sensing beyond line-of-sight occlusions by exchanging observations across CAVs and roadside units~\cite{chen2019cooper,xu2022opv2v,yu2022dairv2x,li2022v2xsim}. Raw LiDAR early fusion preserves full point fidelity~\cite{chen2019cooper} yet exceeds practical C-V2X and ITS-G5 bitrates, whereas standardized object lists such as ETSI Collective Perception Messages~\cite{etsi2023cpm} consume little bandwidth yet discard road topology and dense free space. Intermediate feature fusion therefore became the dominant approach, progressing from spatial max-pooling in F-Cooper~\cite{chen2019fcooper} and graph propagation in V2VNet~\cite{wang2020v2vnet} to knowledge-distilled graphs in DiscoNet~\cite{li2021disconet}, vision transformers in V2X-ViT~\cite{xu2022v2xvit}, and sparse BEV transformers in CoBEVT~\cite{xu2022cobevt}. Real-world benchmarks including DAIR-V2X~\cite{yu2022dairv2x}, V2V4Real~\cite{xu2023v2v4real}, V2X-Seq~\cite{yu2023v2xseq}, and TUMTraf-V2X~\cite{zimmer2024tumtraf} further documented real-road domain shifts.
+
+To curb wireless overhead, handshake protocols such as Who2com~\cite{liu2020who2com} and When2com~\cite{liu2020when2com} select partner senders dynamically, while Where2comm~\cite{hu2022where2comm} transmits spatially sparse features gated by confidence maps. Follow-up methods refined multi-resolution selection and temporal importance in UMC~\cite{wang2023umc}, How2comm~\cite{yang2023how2comm}, Select2Col~\cite{liu2024select2col}, and Long-SCOPE~\cite{wang2026longscope}, and addressed system impairments including localization error in CoAlign~\cite{lu2023coalign}, latency in SyncNet~\cite{lei2022syncnet}, heterogeneous agent backbones in HEAL~\cite{lu2024heal}, and collaborative camera depth in CoCa3D~\cite{hu2023coca3d}. Every one of these frameworks presupposes an active onboard ego LiDAR or camera backbone and treats V2X streams as auxiliary context.
+
+\subsection{3D Semantic Occupancy Prediction}
+
+Single-vehicle 3D semantic occupancy shifts perception from oriented bounding boxes to dense volumetric semantics covering arbitrary obstacles and drivable surfaces. Vision-based pipelines such as MonoScene~\cite{cao2022monoscene}, TPVFormer~\cite{huang2023tpvformer}, VoxFormer~\cite{li2023voxformer}, SurroundOcc~\cite{wei2023surroundocc}, and Occ3D~\cite{tian2023occ3d} lift surround images into 3D voxel grids, whereas SparseOcc~\cite{liu2024sparseocc} and GaussianFormer~\cite{huang2024gaussianformer} leverage sparsity and 3D Gaussians to curb compute. For LiDAR sweeps, real-time pillar and voxel encoders~\cite{lang2019pointpillars,ronneberger2015unet} offer reliable metric depth and low computational overhead.
+
+Extending 3D semantic occupancy to V2X networks is an emerging frontier. CoHFF~\cite{song2024cohff} introduced the Semantic-OPV2V benchmark and hybrid orthogonal-plane fusion across camera-equipped CAVs. Co3SOP~\cite{wu2025co3sop} expanded synthetic collaborative occupancy evaluation across ranges, and VQSOP~\cite{li2026vqsop} introduced sparse-aware vector quantization for multi-camera occupancy transmission. All three frameworks rely on ego surround cameras and score unmasked occupied-versus-empty voxel grids rather than separating verified free corridors from unobserved blind zones.
+
+\subsection{Discrete Neural Compression and Vector Quantization}
+
+Vector quantization maps continuous latents to compact integer indices for low-bitrate transmission~\cite{vandenoord2017vqvae}. Residual vector quantization (RVQ), widely adopted in neural audio codecs such as SoundStream~\cite{zeghidour2021soundstream} and EnCodec~\cite{defossez2023encodec}, cascades coarse-to-fine codebooks for progressive bitrate refinement. Classical VQ training is prone to prototype collapse and straight-through gradient mismatch. SimVQ~\cite{zhu2025simvq} stabilizes utilization through linear reparameterization, and the rotation trick~\cite{fifty2025rotation} preserves gradient angular alignment across nearest-neighbor lookup. In cooperative perception, CodeFilling~\cite{hu2024codefilling} applies a shared codebook to detection features, and VQSOP~\cite{li2026vqsop} applies shared sparse-aware quantization to camera occupancy. Neither method factorizes discrete semantic identity from grouped geometric codebooks nor partitions bitstreams into loss-isolated micro-blocks.
+
+\subsection{Visibility Modeling, Adverse Weather, and Research Gaps}
+
+Classical robotic mapping explicitly distinguishes \textit{occupied}, \textit{free}, and \textit{unknown} space via ray-casting occupancy grids~\cite{elfes1989occupancy,amanatides1987ray} and probabilistic octrees such as OctoMap~\cite{hornung2013octomap}. Under adverse weather, laser extinction and droplet backscatter sharply contract LiDAR range~\cite{bijelic2020fog}. Physics-based LISA~\cite{kilic2021lisa} models fog via the Beer--Lambert law and rain backscatter via hybrid Monte Carlo sampling, whereas LiDARWeather~\cite{park2024lidarweather} studies training-time point-drop augmentation and V2X-R~\cite{huang2025v2xr} adds 4D radar under adverse weather. Well-calibrated predictive uncertainty~\cite{shannon1948entropy,guo2017calibration} becomes essential whenever sensing range contracts.
+
+Synthesizing these four lines reveals three open gaps directly addressed by BorrowedSight:
+\begin{enumerate}
+\item \textbf{Absence of a Verifiable Zero-Ego Cooperative Occupancy Protocol:} Prior V2X occupancy systems depend on ego perception streams and lack automated leakage verification or safe outage fallback.
+\item \textbf{Semantic-Geometric Interference in Equal-Byte Discrete Streams:} Monolithic shared codebooks without explicit semantic factorization or category quotas waste bandwidth on planar roads, collapse vertical static classes, and break under partial packet loss.
+\item \textbf{Conflation of Blind Volumes with Free Space:} Occupied-only sparse token messaging omits explicit free-space visibility, causing receivers to hallucinate free space inside occluded or weather-blinded regions.
+\end{enumerate}
+
+\section{Problem Formulation and Zero-Ego Protocol}
+
+Having identified the structural failure modes of prior cooperative occupancy systems, we now formalize the zero-ego receiver boundary, coordinate geometry, causal sender-ray tri-state labeling, and equalized wire-budget rules.
+
+\subsection{Zero-Ego Receiver Boundary and Coordinate Alignment}
+
+Consider an ego vehicle $E$ with world pose $\mathbf{T}_E^W \in \mathrm{SE}(3)$, timestamp $t$, and kinematic state $\mathbf{m}_E = (v_E, \omega_E)^\top$ (longitudinal speed and yaw rate). Surrounding $E$ is a set of $K$ LiDAR-equipped neighbor CAVs $\mathcal{S} = \{1, \dots, K\}$ strictly excluding the ego vehicle ($E \notin \mathcal{S}$). Each neighbor $s \in \mathcal{S}$ acquires a local 3D LiDAR sweep $\mathcal{P}_s \subset \mathbb{R}^3$ at pose $\mathbf{T}_s^W \in \mathrm{SE}(3)$ and broadcasts a serialized binary packet $b_s \in \{0,1\}^{8 L_s}$ of exact byte length $L_s \le B$.
+
+Under the strict zero-ego-observation contract, the receiver decoder $f_{\mathrm{rx}}$ is restricted to the functional signature
+\begin{equation}
+\big(\hat{\mathbf{Y}}_{\mathrm{sem}},\, \hat{\mathbf{Y}}_{\mathrm{tri}}\big) = f_{\mathrm{rx}}\!\left(\mathbf{T}_E^W,\, t,\, \mathbf{m}_E,\, \{b_s\}_{s \in \mathcal{S}}\right),
+\label{eq:zero_ego_sig}
+\end{equation}
+forbidding any ego camera image, ego LiDAR return, ego radar sweep, HD map prior, or ego-derived latent feature from entering $f_{\mathrm{rx}}$. Adhering to the official CoHFF and Semantic-OPV2V voxel specification~\cite{song2024cohff}, the receiver predicts an ego-centric 3D grid over $x \in [-20, 20]\,\mathrm{m}$, $y \in [-20, 20]\,\mathrm{m}$, and $z \in [-2.5, 0.9]\,\mathrm{m}$ discretized into $G_x \times G_y \times G_z = 100 \times 100 \times 8$ voxels at resolution $(\Delta x, \Delta y, \Delta z) = (0.4, 0.4, 0.425)\,\mathrm{m}$. The semantic head predicts $C = 12$ foreground and structural categories (Building, Fence, Terrain, Pole, Road, SideWalk, Vegetation, Vehicles, Wall, GuardRail, TrafficSign, Bridge), while raw index~0 (\textit{Unlabeled}) is masked via \texttt{ignore\_index}.
+
+Every 3D point or voxel anchor $\mathbf{p}_s \in \mathbb{R}^3$ from sender $s$ maps into ego coordinates via the exact rigid transformation~\cite{xu2022opv2v,song2024cohff}
+\begin{equation}
+\tilde{\mathbf{p}}_E = \left(\mathbf{T}_E^W\right)^{-1} \mathbf{T}_s^W \tilde{\mathbf{p}}_s,
+\label{eq:se3_transform}
+\end{equation}
+where $\tilde{\mathbf{p}} = [\mathbf{p}^\top, 1]^\top$ denotes homogeneous coordinates under the exact OPV2V degree-based Euler convention. Sender $s$'s physical LiDAR origin maps to $\mathbf{o}_{s \to E} = \big((\mathbf{T}_E^W)^{-1} \mathbf{T}_s^W [0,0,0,1]^\top\big)_{1:3}$.
+
+\subsection{Sender-Ray Tri-State Occupancy Ground Truth}
+
+Semantic-OPV2V~\cite{song2024cohff} supplies dense semantic voxel labels via multi-LiDAR surround re-simulation, assigning label~0 to unscanned empty cells. Treating label~0 as verified free space violates physical causality whenever no neighbor ray visited that cell. We therefore construct physical tri-state visibility ground truth $Y_{\mathrm{tri}} \in \{0, 1, 2\}^{G_x \times G_y \times G_z}$ exclusively from neighbor raw OPV2V LiDAR sweeps via 3D digital differential analyzer (DDA) ray traversal~\cite{amanatides1987ray,elfes1989occupancy,hornung2013octomap}.
+
+For each sender $s \in \mathcal{S}$ and transformed return $\mathbf{p}_E \in \mathcal{P}_{s \to E}$, the ray from $\mathbf{o}_{s \to E}$ to $\mathbf{p}_E$ marks every traversed voxel strictly prior to the hit as \textit{Observed Free} (state~1) and the terminal hit voxel as \textit{Occupied} (state~2). All voxels behind the first hit, beyond sensor range, or missed by all rays remain \textit{Unknown} (state~0). Across multiple senders, individual visibility grids $\{V_s\}_{s \in \mathcal{S}}$ combine through causal evidence union:
+\begin{equation}
+Y_{\mathrm{tri}}(\mathbf{u}) = \max_{s \in \mathcal{S}} V_s(\mathbf{u}) \in \{0, 1, 2\}.
+\label{eq:tristate_union}
+\end{equation}
+Any voxel observed occupied by at least one neighbor is occupied, any voxel verified free by at least one neighbor and occupied by none is observed free, and any voxel unobserved by all neighbors remains strictly unknown. Semantic cross-entropy loss is masked to \texttt{ignore\_index} whenever $Y_{\mathrm{tri}}(\mathbf{u}) = 0$, guaranteeing that the decoder is never rewarded for guessing hidden blind zones.
+
+\subsection{Equalized Wire Budgets and Automated Zero-Ego Verification}
+
+Fair benchmarking across communication protocols demands matched serialized byte lengths rather than proxy token counts. For any target packet budget $B \in \{2048, \dots, 32768\}$ bytes per sender (0.16--2.62~Mbps at 10~Hz), every method serializes an exact $B$-byte wire packet covering headers, optional visibility envelopes, micro-block headers, quantized tokens, and explicit sub-block tail padding. Across transmitting methods $\mathrm{B1}$--$\mathrm{B4}$, pairwise byte discrepancy is locked to zero:
+\begin{equation}
+\epsilon_{\mathrm{byte}} = \frac{\max_{i,j} |L_i - L_j|}{\frac{1}{|\mathcal{M}|}\sum_{m \in \mathcal{M}} L_m} \le 0.02 \quad (\text{exact } 0.0\% \text{ in our protocol}).
+\label{eq:byte_fairness}
+\end{equation}
+When all neighbor links drop ($\mathcal{S} = \emptyset$), the receiver deterministically invokes a safe fallback guard outputting 100\% \textit{Unknown} ($\mathrm{UFE} = 0.0$). Six automated \texttt{pytest} invariants enforce zero-ego integrity across both synthetic and real OPV2V pipelines (summarized in \ref{app:audit}, Table~\ref{tab:app_audit}): randomizing ego LiDAR produces bit-identical outputs, removing ego camera directories has zero effect, $f_{\mathrm{rx}}$ exposes zero ego sensor arguments, receiver IDs never appear in sender sets, zero-sender input yields 0.0~mIoU and 100\% Unknown, and every fused coordinate traces strictly to neighbor sweeps.
+
+\section{Methodology: BorrowedSight}
+
+Fig.~\ref{fig:architecture} illustrates the end-to-end BorrowedSight architecture, integrating four mutually reinforcing components: pure-PyTorch sender encoding with category-balanced quotas, category-geometry factorized residual vector quantization, loss-resilient 16-token Morton micro-blocks with $20\times 20$ or $25\times 25$ Zstandard visibility envelopes, and vectorized $\mathrm{SE}(3)$ receiver decoding trained across randomized bandwidth budgets.
+
+\begin{figure*}[!tbp]
+\centering
+\includegraphics[width=\textwidth]{figures_pub/fig1_architecture.pdf}
+\caption{Overview of the BorrowedSight architecture and exact wire-packet protocol. \textbf{(a)} Neighbor LiDAR-equipped CAVs encode local sweeps via a pure-PyTorch scatter voxelizer and 2D residual U-Net, select anchors with category-balanced quotas, quantize features through category-geometry factorized ResidualSimVQ codebooks, and transmit independent 16-token Morton micro-blocks paired with a $20\times 20$ or $25\times 25$ Zstandard visibility envelope. The zero-ego receiver accepts strictly ego pose, timestamp, motion, and V2X packets to decode $E_{\mathrm{cls}}(c)+\mathrm{VQ}_g(q)$, backward-warp visibility envelopes, and predict 12-class semantic occupancy, tri-state visibility, and epistemic risk. \textbf{(b)} Exact wire layout enforcing 0.0\% byte discrepancy across all baselines.}
+\label{fig:architecture}
+\end{figure*}
+
+\subsection{Pure-PyTorch Sender Encoding and Category-Aware Quota Selection}
+
+To enable portable deployment without fragile third-party sparse-convolution builds (such as \texttt{spconv} or \texttt{mmcv}), both sender and receiver run entirely in standard PyTorch. Each neighbor point cloud $\mathcal{P}_s$ inside the $100\times 100\times 8$ volume is aggregated per voxel $\mathbf{u} = (i_x, i_y, i_z)$ through differentiable scatter-mean and scatter-max pooling over local point offsets~\cite{lang2019pointpillars}. The 3D volume is height-collapsed along $z$ into a BEV feature map, processed by a three-scale residual U-Net~\cite{ronneberger2015unet} with scaled dot-product self-attention at the $25\times 25$ bottleneck, and lifted back to $G_x \times G_y \times G_z$ to yield per-voxel embeddings $\mathbf{f}_u \in \mathbb{R}^{d}$ ($d = 16$) and local semantic predictions $\hat{c}_u \in \{1,\dots,12\}$.
+
+For every ray-verified occupied voxel ($V_s(\mathbf{u}) = 2$), six geometric descriptors $\mathbf{g}_u \in \mathbb{R}^{6}$ (normalized point density, within-voxel centroid offset $(\delta x, \delta y, \delta z)$, and vertical/planar variance) are fused with appearance features via a two-layer MLP to produce a category-geometry latent $\mathbf{z}_u \in \mathbb{R}^d$ and importance score $s_u$:
+\begin{equation}
+\mathbf{z}_u = \phi_{\mathrm{fuse}}\!\left([\mathbf{f}_u \,\|\, \mathbf{g}_u]\right), \qquad s_u = \mathbf{w}_s^\top \mathbf{z}_u + b_s.
+\label{eq:geo_fuse}
+\end{equation}
+
+In real multi-lane driving sweeps, planar road voxels constitute the majority of occupied LiDAR returns and quickly crowd out dynamic vehicles and thin vertical hazards under unconstrained top-$N$ selection. BorrowedSight therefore partitions the 12 semantic classes into three geometric super-groups: \textit{Things} ($\mathcal{G}_0$: Vehicles), \textit{Ground} ($\mathcal{G}_1$: Road, SideWalk, Terrain), and \textit{Vertical Static} ($\mathcal{G}_2$: Building, Fence, Pole, Vegetation, Wall, GuardRail, TrafficSign, Bridge). Given packet slot capacity $N(B)$, a zero-synchronization GPU-vectorized quota selector reserves minimum floors $\rho_{\mathrm{thing}} = 0.15$ for $\mathcal{G}_0$ and $\rho_{\mathrm{vert}} = 0.15$ for $\mathcal{G}_2$, prioritizes highest-scoring non-road anchors ahead of road anchors, and caps road tokens at $\rho_{\mathrm{road}} = 0.45$ via $N_{\mathrm{road}} \le \lfloor N_{\mathrm{other}} \rho_{\mathrm{road}} / (1 - \rho_{\mathrm{road}}) \rfloor$.
+
+\subsection{Category-Geometry Factorized Residual Vector Quantization}
+
+A subtle structural bottleneck arises when coupling discrete class tags with grouped vector quantizers. Even when three separate geometry codebooks $\mathcal{Q}_g$ ($g \in \{0,1,2\}$, $K_{\mathrm{cb}} = 32$ prototypes per stage) are assigned to Things, Ground, and Vertical Static, the Vertical Static group still spans eight structurally distinct classes (from wide building facades to slender poles and traffic signs). If the receiver uses the transmitted 1-byte class tag $c_u$ solely to pick group $g(c_u)$ and discards $c_u$ during feature reconstruction, those eight classes must compete for 32 shared geometry vectors, severely collapsing minority vertical classes such as buildings.
+
+BorrowedSight eliminates this bottleneck through \textbf{Category-Geometry Factorization}. Because every 8-byte token already carries its discrete 1-byte class identifier $c_u \in \{1,\dots,12\}$ on the wire, both sender and receiver share a lightweight learnable category embedding table $\mathbf{E}_{\mathrm{cls}} \in \mathbb{R}^{13 \times d}$ (just 208 parameters and \textit{zero extra wire bytes}). Each token's continuous latent is decomposed into its discrete category prototype $\mathbf{E}_{\mathrm{cls}}(c_u)$ plus a continuous geometric residual $\mathbf{r}_u^{(0)} = \mathbf{z}_u - \mathbf{E}_{\mathrm{cls}}(c_u)$ that is quantized by group $g = g(c_u)$ using a two-stage ResidualSimVQ codebook~\cite{zeghidour2021soundstream,zhu2025simvq} trained with the rotation trick~\cite{fifty2025rotation}:
+\begin{equation}
+q_u^{(\ell)} = \arg\min_{k \in \{1,\dots,K_{\mathrm{cb}}\}} \left\|\mathbf{r}_u^{(\ell-1)} - \mathbf{W}_g^{(\ell)} \mathbf{e}_{g,k}^{(\ell)}\right\|_2^2,
+\label{eq:rvq_index}
+\end{equation}
+\begin{equation}
+\mathbf{r}_u^{(\ell)} = \mathbf{r}_u^{(\ell-1)} - \mathbf{W}_g^{(\ell)} \mathbf{e}_{g,q_u^{(\ell)}}^{(\ell)}, \qquad \hat{\mathbf{z}}_u^{(S)} = \mathbf{E}_{\mathrm{cls}}(c_u) + \sum_{\ell=1}^{S} \mathbf{W}_g^{(\ell)} \mathbf{e}_{g,q_u^{(\ell)}}^{(\ell)},
+\label{eq:rvq_recon}
+\end{equation}
+where $\mathbf{e}_{g,k}^{(\ell)} \in \mathbb{R}^d$ are frozen bases and $\mathbf{W}_g^{(\ell)} \in \mathbb{R}^{d\times d}$ is the learnable SimVQ projection matrix. Because $\mathbf{E}_{\mathrm{cls}}(c_u)$ anchors exact class identity identically on sender and receiver, every prototype in $\mathcal{Q}_g$ specializes purely in intra-class 3D geometric variation (orientation, height profile, and local density). Stage $S=1$ uses 8~bytes/token (1-byte code $q_u^{(1)}$), while stage $S=2$ appends 1-byte residual $q_u^{(2)}$ (9~bytes/token).
+
+\subsection{Morton Micro-Blocks and $20\times 20$ / $25\times 25$ Zstd Visibility Envelopes}
+
+To withstand bursty V2X packet drops without cross-packet desynchronization, selected anchors are sorted by their 17-bit 3D Morton Z-order index~\cite{morton1966zorder} computed in $\mathcal{O}(1)$ via precomputed bit-interleaving lookup tables:
+\begin{equation}
+m(i_x, i_y, i_z) = \sum_{b=0}^{6} \left(2^{3b} i_{x,b} + 2^{3b+1} i_{y,b}\right) + \sum_{b=0}^{2} 2^{3b+2} i_{z,b}.
+\label{eq:morton}
+\end{equation}
+Every 16 consecutive anchors form a self-contained micro-block carrying an 8-byte block header (starting Morton code, valid token count, padding flag) and 16 fixed-width token records (4-byte absolute Morton index, 1-byte class ID $c_u$, 1- or 2-byte VQ code(s), 1-byte quantized confidence $\hat{\pi}_u = \sigma(s_u)$, and 1-byte evidence flag). Dropping any subset of micro-blocks leaves all surviving blocks independently decodable.
+
+To transmit verified free-space and occlusion boundaries at negligible overhead, every BorrowedSight packet reserves a fixed 512-byte visibility slot (509 usable payload bytes plus 3 framing bytes) encoding a coarse 2D BEV summary $\mathbf{E}_s \in \{0,\dots,255\}^{R \times R}$ pooled from sender ray grid $V_s$. Each coarse cell packs three presence bits---whether its vertical column contains observed free voxels (bit~0), occupied voxels (bit~1), or unknown voxels (bit~2)---together with the maximum occupied height bin $z_{\max} \in \{0,\dots,7\}$ in bits~3--5. At baseline resolution $R = 20$ ($5\times$ downsampling, $2.0\,\mathrm{m}$ cells, 400 raw bytes), Zstandard compression shrinks real OPV2V envelopes to 104--170~bytes (mean 134.1~bytes). Exploiting this 340+ byte compression headroom, our higher-resolution variant \textbf{B4-Env25} increases spatial resolution by 56\% to $R = 25$ ($4\times$ downsampling, $1.6\,\mathrm{m}$ cells, 625 raw bytes), which compresses via Zstandard to just \textbf{133--190~bytes} (mean \textbf{161.8~bytes})---fitting inside the exact same 512-byte slot at \textit{zero extra wire bytes} and \textit{zero extra model parameters}. Sub-block tail padding guarantees $\epsilon_{\mathrm{byte}} = 0.0\%$ across all methods (exact binary layout in \ref{app:wire}, Table~\ref{tab:app_wire}).
+
+\subsection{Receiver Warping, Multi-Budget Training, and Vectorized Decoding}
+
+Upon receiving packets $\{b_s\}_{s \in \mathcal{S}}$ at time $t$, the zero-ego receiver unpacks surviving micro-blocks via bit-shift demortonization, reconstructs factorized embeddings $\hat{\mathbf{z}}_u^{(S)}$ via Eq.~\eqref{eq:rvq_recon}, transforms anchor centers into ego coordinates via Eq.~\eqref{eq:se3_transform}, and weights multi-sender evidence by confidence and temporal freshness:
+\begin{equation}
+w_{s,u} = \hat{\pi}_{s,u} \cdot \exp\!\left(-\frac{|t - t_s|}{\tau}\right), \qquad \tau = 0.5\,\mathrm{s}.
+\label{eq:age_weight}
+\end{equation}
+Each sender's $R \times R$ visibility envelope is mapped into the $100\times 100$ ego BEV grid via exact backward $\mathrm{SE}(3)$ warping rather than direct array blitting. Every ego BEV cell center $\mathbf{x}_E = (x_E, y_E, 0)^\top$ is transformed back into sender $s$'s local frame:
+\begin{equation}
+\tilde{\mathbf{x}}_{E \to s} = \left(\mathbf{T}_s^W\right)^{-1} \mathbf{T}_E^W \tilde{\mathbf{x}}_E,
+\label{eq:env_warp}
+\end{equation}
+followed by bounds-checked cell lookup into $\mathbf{E}_s$ to populate ego-frame free, occupied, unknown, and max-height context channels alongside auxiliary sensor-origin ray carving from $\mathbf{o}_{s \to E}$. Fused 3D features and the 7-channel BEV visibility/motion tensor enter a pure-PyTorch height-collapsed residual U-Net (identical across $\mathrm{B1}$--$\mathrm{B4}$) to output 12-class semantic logits $\hat{\mathbf{Y}}_{\mathrm{sem}}$ and 3-class tri-state logits $\hat{\mathbf{Y}}_{\mathrm{tri}}$. Per-voxel epistemic risk merges normalized Shannon predictive entropy~\cite{shannon1948entropy,guo2017calibration} over the tri-state posterior $\mathbf{p}(\mathbf{u}) = \mathrm{softmax}(\hat{\mathbf{Y}}_{\mathrm{tri}}(\mathbf{u}))$ with unobserved posterior probability $p_0(\mathbf{u})$:
+\begin{equation}
+U(\mathbf{u}) = \frac{1}{2}\!\left(-\frac{1}{\ln 3} \sum_{k=0}^{2} p_k(\mathbf{u}) \ln\!\left(p_k(\mathbf{u}) + \varepsilon\right)\right) + \frac{1}{2} p_0(\mathbf{u}) \in [0, 1].
+\label{eq:uncertainty}
+\end{equation}
+
+\textbf{Multi-Budget Random Training and Loss.} Standard receivers trained at one fixed bitrate degrade steeply when V2X channel load suddenly contracts to 2--8~KB. To achieve rate-adaptive deployment with a single checkpoint (\textbf{B4-MultiBW} and \textbf{B4-Env25-MultiBW}), each training mini-batch draws its packet budget uniformly from $\{4096, 8192, 16384, 32768\}$ bytes, teaching the receiver decoder to interpolate smoothly between sparse high-salience tokens and dense occupancy grids. All trainable receiver, fusion, scorer, category-embedding, and VQ parameters are optimized end-to-end with frozen sender weights via
+\begin{equation}
+\mathcal{L} = \mathcal{L}_{\mathrm{sem}}^{\mathrm{mask}} + \lambda_{\mathrm{tri}} \mathcal{L}_{\mathrm{tri}} + \mathcal{L}_{\mathrm{vq}} + \lambda_{\mathrm{sc}} \mathcal{L}_{\mathrm{score}},
+\label{eq:total_loss}
+\end{equation}
+with $\lambda_{\mathrm{tri}} = 0.5$ and $\lambda_{\mathrm{sc}} = 0.05$. Removing Python loops and CPU-GPU synchronizations from Morton encoding, quota selection, evaluation quantization, and cached FP32 envelope warping accelerates end-to-end serialized inference by $7.26\times$ without changing a single wire bit or learned weight. Algorithm~\ref{alg:borrowedsight} summarizes the complete pipeline.
+
+\begin{algorithm}[t]
+\caption{BorrowedSight Zero-Ego V2X Occupancy Pipeline}
+\label{alg:borrowedsight}
+\KwIn{Neighbor sweeps $\{\mathcal{P}_s, \mathbf{T}_s^W, t_s\}_{s \in \mathcal{S}}$ ($E \notin \mathcal{S}$); ego metadata $(\mathbf{T}_E^W, t, \mathbf{m}_E)$; byte budget $B$; envelope size $R \in \{20, 25\}$; stage $S \in \{1,2\}$.}
+\KwOut{Ego 3D semantic occupancy $\hat{\mathbf{Y}}_{\mathrm{sem}}$, tri-state $\hat{\mathbf{Y}}_{\mathrm{tri}}$, risk $U$.}
+\BlankLine
+\tcp{Phase 1: Neighbor Sender Encoding \& Micro-Block Packing}
+Initialize packet set $\mathcal{B} \leftarrow \emptyset$\;
+\ForEach{neighbor sender $s \in \mathcal{S}$}{
+  Compute voxel features $\mathbf{f}$ and local classes $\hat{c}$ via frozen \texttt{SenderEncoder}($\mathcal{P}_s$)\;
+  Trace sender rays from $\mathbf{0}$ to $\mathcal{P}_s$ to build tri-state grid $V_s$ and $R \times R$ envelope $\mathbf{E}_s$\;
+  Fuse 6-d local geometry $\mathbf{g}_u$ with $\mathbf{f}_u$ via Eq.~\eqref{eq:geo_fuse} to obtain $\mathbf{z}_u$ and logits $s_u$\;
+  Select $N(B)$ occupied anchors via vectorized category quotas ($\rho_{\mathrm{thing}}, \rho_{\mathrm{vert}}, \rho_{\mathrm{road}}$)\;
+  Subtract $\mathbf{E}_{\mathrm{cls}}(\hat{c}_u)$ and quantize residual via group codebook $\mathcal{Q}_{g(\hat{c}_u)}$ using Eqs.~\eqref{eq:rvq_index}--\eqref{eq:rvq_recon}\;
+  Sort anchors by 3D Morton code Eq.~\eqref{eq:morton}, pack 16-token micro-blocks with 512~B Zstd envelope $\mathbf{E}_s$ and exact tail padding to size $B$, and transmit $b_s$\;
+  Append surviving received packet $b_s$ (after channel drops) to $\mathcal{B}$\;
+}
+\BlankLine
+\tcp{Phase 2: Strict Zero-Ego Receiver Reconstruction}
+\If{$\mathcal{B} = \emptyset$}{
+  \Return{safe fallback: 100\% \textit{Unknown} ($\mathrm{UFE}=0.0$) and maximal risk}\;
+}
+Initialize ego volume $\mathbf{F}_E \leftarrow \mathbf{0}$, weight $\mathbf{W}_E \leftarrow \mathbf{0}$, BEV context $\mathbf{C}_E \leftarrow \mathbf{0}$\;
+\ForEach{received packet $b_s \in \mathcal{B}$}{
+  Unpack surviving micro-blocks and reconstruct $\hat{\mathbf{z}}_u^{(S)} = \mathbf{E}_{\mathrm{cls}}(c_u) + \mathrm{VQ}_{g}(q_u)$\;
+  Warp anchor coordinates via Eq.~\eqref{eq:se3_transform} and scatter-accumulate weighted features Eq.~\eqref{eq:age_weight}\;
+  Backward-warp $R\times R$ envelope $\mathbf{E}_s$ into ego BEV via Eq.~\eqref{eq:env_warp} and carve auxiliary rays from $\mathbf{o}_{s \to E}$\;
+}
+Normalize $\mathbf{F}_E \leftarrow \mathbf{F}_E / \max(\mathbf{W}_E, 10^{-6})$ and decode $(\hat{\mathbf{Y}}_{\mathrm{sem}}, \hat{\mathbf{Y}}_{\mathrm{tri}}) \leftarrow \texttt{ReceiverDecoder}(\mathbf{F}_E, \mathbf{C}_E)$\;
+Compute epistemic risk $U$ via Eq.~\eqref{eq:uncertainty}\;
+\Return{$(\hat{\mathbf{Y}}_{\mathrm{sem}}, \hat{\mathbf{Y}}_{\mathrm{tri}}, U)$}\;
+\end{algorithm}
+
+\section{Experiments and Analysis}
+
+We validate BorrowedSight across five complementary tiers: (1) a 9-scene real OPV2V multi-sender physical visibility oracle, (2) full 25-scene multi-sender real OPV2V and Mini-200 equal-byte comparisons, (3) strict scene-grouped 5-fold cross-validation across all 25 disjoint scenes, (4) orthogonal component ablations, codebook sensitivity, and multi-seed stability, and (5) bandwidth scaling (2--32~KB), LISA physical weather, multi-sender scaling, urban congestion, V2X impairments, qualitative analysis, and real-time RTX~3090 profiling.
+
+\subsection{Datasets, Baselines, and Reproducible Compute Setup}
+
+\textbf{Full Multi-Sender Real OPV2V + Semantic-OPV2V Benchmark.} We pair raw OPV2V~\cite{xu2022opv2v} multi-CAV LiDAR point clouds and degree-accurate 6-DoF poses with official Semantic-OPV2V (\texttt{4LidarSurround}) voxel labels~\cite{song2024cohff} over the exact $100\times 100\times 8$ CoHFF volume. Following strict scene-level separation (zero scene or temporal overlap across splits), our real benchmark comprises \textbf{25 complete driving scenarios (2,383 multi-CAV frames, 2--5 CAVs per scene)}:
+\begin{itemize}
+\item \textbf{Train (13 scenes, 1,084 frames):} 2--4 CAVs per scene (mean 2.62 CAVs, 0--11 vehicles/frame), covering all \textbf{12/12} semantic foreground classes.
+\item \textbf{Validate (6 scenes, 573 frames):} 2--5 CAVs per scene (mean 2.67 CAVs, 1--10 vehicles/frame), covering all \textbf{12/12} semantic foreground classes.
+\item \textbf{Held-Out Test (6 scenes, 726 frames):} 2--5 CAVs per scene (mean 3.33 CAVs, 5 of 6 scenes multi-sender with 3--5 CAVs, 1--11 vehicles/frame), covering \textbf{11/12} foreground classes plus Observed Free (only \textit{Bridge} is physically absent from these 6 test scenes).
+\end{itemize}
+Coordinate audit confirms 25/25 (100.0\%) ground-truth vehicle centers falling on semantic \textit{Vehicles} voxels and 98.82\% of raw neighbor LiDAR points landing on occupied semantic voxels. For full 25-scene statistical validation, we additionally partition all 25 scenarios into 5 load-balanced, strictly disjoint 5-scene folds (470--483 validation frames per fold). As a controlled secondary protocol benchmark, we also evaluate on the 200-frame, 3-sender \textbf{Mini-200} suite. Training uses exclusively clear sweeps with lightweight 1~cm jitter and 5\% random drop~\cite{park2024lidarweather}. Physics-based \textbf{LISA}~\cite{kilic2021lisa} Beer--Lambert fog and Monte Carlo rain are strictly held out in physically separate test caches (total sparse cache footprint 1.61~GB).
+
+\textbf{Frozen Sender Backbone and Equal-Capacity Baselines.} The shared pure-PyTorch \texttt{SenderEncoder} (1.170M parameters, 7.64~GFLOPs) is trained for 30 epochs on the 13 real training scenes (2,571.3~s / 0.71~GPU-h, 0.25~GB peak VRAM), achieving \textbf{0.7150} validation mIoU across all 13/13 classes (Vehicle IoU \textbf{0.9133}, Road IoU \textbf{0.9757}, Building IoU \textbf{0.9107}, GuardRail IoU \textbf{0.9501}). All baselines share this exact frozen encoder, the exact same \texttt{ReceiverDecoder} (1.167M parameters, 7.58~GFLOPs), and the exact same micro-block packer:
+\begin{itemize}
+\item \textbf{B0 (No Communication):} 0~B received, establishing the strict zero-ego lower bound.
+\item \textbf{B1 (Sparse FP16):} Top-$k$ geometry-salient anchors transmit raw 16-d FP16 vectors at 36~B/token (432 tokens at 16~KB, 896 at 32~KB).
+\item \textbf{B2 (Projected Continuous):} Learned top-$k$ anchors project to 8-d FP16 vectors at 20~B/token (784 tokens at 16~KB, 1,584 at 32~KB).
+\item \textbf{B3 (Shared VQ):} Learned top-$k$ anchors use a single shared ResidualSimVQ codebook, adapting the sparse-aware quantization of VQSOP~\cite{li2026vqsop} to identical LiDAR backbones at 8~B/token (1,920 tokens at 16~KB, 3,840 at 32~KB).
+\item \textbf{B4 / B4-Env25 / B4-MultiBW (BorrowedSight):} Full category-geometry factorized protocol with 3-group ResidualSimVQ, 208-parameter class embeddings, category quotas, and fixed 512~B Zstd visibility envelopes ($20\times 20$ for B4, $25\times 25$ for B4-Env25, plus randomized 4--32~KB training for MultiBW) packing 1,856 tokens at 16~KB and 3,776 tokens at 32~KB (exact 0.0\% byte discrepancy).
+\end{itemize}
+
+\textbf{Metrics and RTX~3090 Compute Budget.} Semantic reconstruction is scored by mIoU over Observed Free and all present CoHFF classes within neighbor-observed ground truth, alongside \textit{Vehicle IoU} and \textit{Road IoU}. Safety-boundary integrity is measured by \textit{Unknown F1} and \textit{Unobserved-as-Free Error (UFE)}---the fraction of ground-truth unobserved blind voxels mispredicted as free space. Table~\ref{tab:config} summarizes exact parameter counts, FLOPs, hyperparameters, and single-GPU RTX~3090 training budgets. BorrowedSight adds only \textbf{1,232 parameters (+0.053\%)} over B3 (+1,024 for grouped codebooks and +208 for $\mathbf{E}_{\mathrm{cls}}$), and B4-Env25 adds \textbf{zero} extra parameters or wire bytes. Receivers train for 15 epochs (batch size 4, bfloat16 decoder autocast, AdamW~\cite{loshchilov2019adamw} at $\mathrm{lr} = 8\times 10^{-4}$, cosine decay, gradient clip 5.0) at peak VRAM $\le 0.38$~GB.
+
+\begin{table*}[!tbp]
+\centering
+\caption{Exact model capacity, computational footprint, training cost, and shared hyperparameters measured on a single NVIDIA RTX~3090 GPU (PyTorch 2.10.0+cu128). All baselines share identical encoder and decoder backbones. \textbf{B4} and \textbf{B4-Env25} add only 1,232 parameters (+0.053\%) over B3.}
+\label{tab:config}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{lrrrrcll}
+\toprule
+\textbf{Method} & \textbf{Encoder} & \textbf{Decoder} & \textbf{Comm. Head} & \textbf{Total Params} & \textbf{Token Width} & \textbf{Compute \& Training Budget (RTX 3090)} & \textbf{Shared Hyperparameters} \\
+\midrule
+B0 (No Comm) & 1,170,040 & 1,167,232 & 657 & 2,337,929 & 0~B & Sender GFLOPs: \textbf{7.64} \quad Receiver GFLOPs: \textbf{7.58} & Grid: $100\times 100\times 8$ ($40\times 40\times 3.4$~m) \\
+B1 (Sparse FP16) & 1,170,040 & 1,167,232 & 657 & 2,337,929 & 36~B & Total GFLOPs: \textbf{15.22} (Pure PyTorch, 0 custom ops) & Feature dim $d = 16$, codebook $K_{\mathrm{cb}} = 32$ \\
+B2 (Cont. 8-d) & 1,170,040 & 1,167,232 & 937 & 2,338,209 & 20~B & Real sender (30 ep, 13 scenes): \textbf{0.71~GPU-h} (249~MB) & Optimizer: AdamW ($\mathrm{wd} = 10^{-4}$, clip $5.0$) \\
+B3 (Shared VQ) & 1,170,040 & 1,167,232 & 1,169 & 2,338,441 & 8~B & Real receivers (34 models $\times$ 15 ep, bs=4): \textbf{0.38~GB} peak & Real LR: $6\times 10^{-4}$ (tx) / $8\times 10^{-4}$ (rx) \\
+\rowcolor{oursrow}
+\textbf{B4 / B4-Env25 (Ours)} & \textbf{1,170,040} & \textbf{1,167,232} & \textbf{2,401} & \textbf{2,339,673} & \textbf{8 / 9~B} & 5-Fold CV (20 models, 25 scenes): \textbf{6.69~GPU-h} & Quotas: $\rho_{\mathrm{road}}=0.45$, $\rho_{\mathrm{thing}}=\rho_{\mathrm{vert}}=0.15$ \\
+\bottomrule
+\end{tabular}}
+\end{table*}
+
+\subsection{Multi-Sender Visibility Oracle on Real OPV2V}
+
+Before evaluating neural communication, we quantify the physical observation ceiling across all 9 real OPV2V validation scenes (90 frames, exact degree-based $\mathrm{SE}(3)$ ray tracing). Table~\ref{tab:oracle} and Fig.~\ref{fig:oracle} expose three physical laws governing zero-ego cooperative perception. First, multi-sender fusion delivers strong dynamic-target dividends: adding senders from 1 to 3 raises clear-weather 3D vehicle recall from 0.7962 to \textbf{0.9190}. In congested urban traffic, dense vehicle fleets transform inter-vehicle occlusion into complementary multi-view coverage, pushing medium-density recall to 0.9684 and dense-traffic recall to \textbf{1.0000} alongside a coverage surge from 0.5036 to 0.5850. Second, adverse weather dramatically narrows observation range: LISA fog raises unobservable volume from 61.22\% to \textbf{90.18\%} (88.42\% with three senders), cutting recall to 0.5043--0.5837. Third, even with three clear-weather senders, \textbf{58.70\%} of the ego grid remains physically unseen, proving why explicit \textit{Unknown} representation is physically mandatory.
+
+\begin{table*}[!tbp]
+\centering
+\caption{Physical multi-sender visibility oracle across all 9 real OPV2V validation scenes (90 frames). Even with three clear-weather senders, 58.70\% of ego voxels remain physically unobservable, and LISA fog drives blind volume above 88\%.}
+\label{tab:oracle}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{llccccc}
+\toprule
+\textbf{Stratification} & \textbf{Regime} & \textbf{Active Senders} & \textbf{Observable Coverage} & \textbf{Unknown Volume} & \textbf{3D Vehicle Box Recall} & \textbf{Near-Range Coverage (0--10~m)} \\
+\midrule
+Weather & Clear & 1 / 2 / 3 & 0.3878 / 0.3799 / \textbf{0.4130} & 0.6122 / 0.6201 / \textbf{0.5870} & 0.7962 / \underline{0.8836} / \textbf{0.9190} & 0.4617 / \underline{0.4768} / \textbf{0.4962} \\
+Weather & LISA Rain & 1 / 2 / 3 & 0.2365 / \underline{0.2523} / \textbf{0.2770} & 0.7635 / \underline{0.7477} / \textbf{0.7230} & \textbf{0.8560} / \underline{0.7982} / 0.7844 & 0.3003 / \underline{0.3088} / \textbf{0.3173} \\
+Weather & LISA Fog & 1 / 2 / 3 & 0.0982 / \underline{0.1028} / \textbf{0.1158} & 0.9018 / \underline{0.8972} / \textbf{0.8842} & 0.5043 / \underline{0.5574} / \textbf{0.5837} & 0.1172 / \underline{0.1174} / \textbf{0.1239} \\
+\midrule
+Traffic Density (Clear) & Sparse & 1 / 2 / 3 & \textbf{0.3813} / \underline{0.3224} / 0.2815 & \textbf{0.6187} / \underline{0.6776} / 0.7185 & \underline{0.7745} / \textbf{0.8013} / 0.7619 & -- \\
+Traffic Density (Clear) & Medium & 1 / 2 / 3 & 0.3857 / \underline{0.4022} / \textbf{0.4572} & 0.6143 / \underline{0.5978} / \textbf{0.5428} & 0.8030 / \underline{0.9201} / \textbf{0.9684} & -- \\
+\rowcolor{oursrow}
+\textbf{Traffic Density (Clear)} & \textbf{Dense} & \textbf{1 / 2 / 3} & 0.5036 / \underline{0.5542} / \textbf{0.5850} & 0.4964 / \underline{0.4458} / \textbf{0.4150} & 0.9259 / \textbf{1.0000} / \textbf{1.0000} & -- \\
+\bottomrule
+\end{tabular}}
+\end{table*}
+
+\begin{figure*}[!tbp]
+\centering
+\includegraphics[width=\textwidth]{figures_pub/fig2_real_oracle.pdf}
+\caption{Physical multi-sender visibility oracle across all 9 real OPV2V validation scenes (90 frames). \textbf{(a)} Observable voxel coverage contracts sharply from Clear to LISA Rain and LISA Fog while increasing with active senders. \textbf{(b)} Clear 3D vehicle recall climbs to 0.9190 with three senders. \textbf{(c)} Urban congestion stratification demonstrates that denser traffic yields higher cooperative recall (reaching 1.0000) as complementary neighbor perspectives resolve occlusion.}
+\label{fig:oracle}
+\end{figure*}
+
+\subsection{Main Equalized-Byte Comparison on 25-Scene Real OPV2V and Mini-200}
+
+Table~\ref{tab:main} and Fig.~\ref{fig:main} report the primary equalized-byte comparisons on the full 25-scene real OPV2V held-out test set (6 multi-sender scenes, 726 frames, 12 evaluated classes) at both 32,768~B and 16,384~B, alongside the refreshed 3-sender Mini-200 benchmark (16,384~B). Every transmitting model passes exact binary wire serialization and deserialization with 0.0\% byte discrepancy.
+
+\begin{table*}[!tbp]
+\centering
+\caption{Equalized serialized wire-budget comparison on the full 25-scene Real OPV2V held-out test split (6 scenes, 726 frames, 2--5 CAVs) and the 3-sender Mini-200 benchmark ($\epsilon_{\mathrm{byte}} = 0.0\%$). Three-seed mean $\pm$ std across seeds $\{0,1,2\}$ is reported for 32~KB B3, B4, and B4-Env25. Best values per block are in \textbf{bold}, and second-best are \underline{underlined}.}
+\label{tab:main}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{lrrrrrrrrr}
+\toprule
+\textbf{Method} & \textbf{Bytes/Pkt} & \textbf{Mbps (10 Hz)} & \textbf{mIoU $\uparrow$} & \textbf{Veh. IoU $\uparrow$} & \textbf{Road IoU $\uparrow$} & \textbf{Unk. F1 $\uparrow$} & \textbf{UFE $\downarrow$} & \textbf{CB Usage} & \textbf{Road Tok.} \\
+\midrule
+\multicolumn{10}{l}{\textit{Full 25-Scene Real OPV2V Held-Out Test (32,768 Bytes / Packet, 12 Evaluated Classes)}} \\
+B0 (No Comm) & 0 & 0.00 & 0.0000 & 0.0000 & 0.0000 & 0.7755 & 0.0000$^*$ & -- & -- \\
+B1 (Sparse FP16) & 32,768 & 2.62 & 0.2419 & 0.3133 & 0.6023 & 0.8864 & 0.0908 & -- & -- \\
+B2 (Cont. 8-d) & 32,768 & 2.62 & 0.3611 & 0.4668 & 0.5943 & 0.9091 & 0.0713 & -- & -- \\
+B3 (Shared VQ, 3-seed) & 32,768 & 2.62 & $0.3742 \pm 0.0121$ & $0.4655 \pm 0.0011$ & $0.6860 \pm 0.0082$ & $0.9029 \pm 0.0035$ & {\boldmath$0.0567 \pm 0.0055$} & 0.927 & 0.398 \\
+\rowcolor{oursrow}
+\textbf{B4 (20$\times$20 Env., 3-seed)} & \textbf{32,768} & \textbf{2.62} & \underline{$0.4122 \pm 0.0053$} & \underline{$0.4812 \pm 0.0030$} & {\boldmath$0.6949 \pm 0.0042$} & \underline{$0.9119 \pm 0.0043$} & \underline{$0.0676 \pm 0.0118$} & 0.698 & 0.337 \\
+\rowcolor{oursrow}
+\textbf{B4-Env25 (25$\times$25 Env., 3-seed)} & \textbf{32,768} & \textbf{2.62} & {\boldmath$0.4133 \pm 0.0014$} & {\boldmath$0.4848 \pm 0.0031$} & \underline{$0.6878 \pm 0.0182$} & {\boldmath$0.9128 \pm 0.0034$} & $0.0692 \pm 0.0052$ & 0.719 & 0.337 \\
+\midrule
+\multicolumn{10}{l}{\textit{Full 25-Scene Real OPV2V Held-Out Test (16,384 Bytes / Packet, Half Bandwidth)}} \\
+B1 (Sparse FP16) & 16,384 & 1.31 & 0.1859 & 0.2143 & 0.5665 & 0.8707 & 0.1079 & -- & -- \\
+B2 (Cont. 8-d) & 16,384 & 1.31 & 0.3137 & 0.4258 & 0.5152 & 0.8971 & 0.0878 & -- & -- \\
+B3 (Shared VQ) & 16,384 & 1.31 & 0.3371 & 0.4546 & 0.6158 & \textbf{0.9132} & \underline{0.0794} & 0.938 & 0.080 \\
+\rowcolor{oursrow}
+\textbf{B4 (20$\times$20 Env.)} & \textbf{16,384} & \textbf{1.31} & \underline{0.3700} & \underline{0.4767} & \underline{0.6269} & \underline{0.9130} & \textbf{0.0647} & 0.781 & 0.040 \\
+\rowcolor{oursrow}
+\textbf{B4-Env25 (25$\times$25 Env.)} & \textbf{16,384} & \textbf{1.31} & \textbf{0.3863} & \textbf{0.4898} & \textbf{0.6455} & 0.9059 & 0.0897 & 0.802 & 0.040 \\
+\midrule
+\multicolumn{10}{l}{\textit{Mini-200 Multi-Sender Protocol Benchmark (16,384 Bytes / Packet, Seed 0)}} \\
+B0 (No Comm) & 0 & 0.00 & 0.0000 & 0.0000 & 0.0000 & 0.8475 & 0.0000$^*$ & -- & -- \\
+B1 (Sparse FP16) & 16,384 & 1.31 & 0.3277 & 0.3865 & 0.4984 & 0.9479 & \underline{0.0196} & -- & -- \\
+B2 (Cont. 8-d) & 16,384 & 1.31 & 0.3799 & 0.5970 & 0.2814 & 0.9577 & 0.0217 & -- & -- \\
+B3 (Shared VQ) & 16,384 & 1.31 & 0.3067 & 0.1549 & \underline{0.5374} & 0.9657 & \textbf{0.0184} & 0.625 & 0.148 \\
+\rowcolor{oursrow}
+\textbf{B4 (BorrowedSight)} & \textbf{16,384} & \textbf{1.31} & \textbf{0.5814} & \underline{0.6078} & \textbf{0.6407} & \textbf{0.9725} & 0.0222 & 0.635 & 0.138 \\
+\rowcolor{oursrow}
+\textbf{B4-S2 (Stage-2 RVQ)} & \textbf{16,384} & \textbf{1.31} & \underline{0.5808} & \textbf{0.6582} & 0.4801 & \underline{0.9717} & 0.0316 & 0.615 & 0.076 \\
+\bottomrule
+\multicolumn{10}{l}{\footnotesize $^*$B0 outputs 100\% Unknown on zero packets, yielding trivial 0.0000 UFE alongside 0.0000 mIoU and 0.0000 vehicle recall.}
+\end{tabular}}
+\end{table*}
+
+\begin{figure*}[!tbp]
+\centering
+\includegraphics[width=\textwidth]{figures_pub/fig3_main_comparison.pdf}
+\caption{Equalized serialized byte comparison on the full 25-scene Real OPV2V held-out test set at 32~KB (top row, with 3-seed $\pm$ std bars for B3, B4, and B4-Env25) and 16~KB (bottom row). Under identical encoder and decoder capacity, \textbf{B4} and \textbf{B4-Env25} dominate all equal-byte baselines in mIoU and Vehicle IoU, exceeding the 4-camera ego-equipped CoHFF reference (0.342) even at half bandwidth (16~KB).}
+\label{fig:main}
+\end{figure*}
+
+\textbf{Mechanistic Analysis.} Three structural mechanisms explain the substantial margin in Table~\ref{tab:main}:
+\begin{enumerate}
+\item \textit{Spatial starvation in continuous encodings (B1, B2):} Each real neighbor sweep contains roughly 4,600 occupied voxels. Because B1 spends 36~B per token, it sends only 896 anchors at 32~KB (432 at 16~KB), leaving over 80\% of occupied scene geometry untransmitted and capping test mIoU at 0.2419 (0.1859 at 16~KB). B2 doubles spatial token count via 8-d projection (0.3611 at 32~KB) yet still falls 5.22 points behind discrete category-geometry factorization.
+\item \textit{Why factorized grouped VQ with $25\times 25$ envelopes (B4 / B4-Env25) dominates shared VQ (B3):} At 32~KB, B3 transmits 3,840 tokens but shares one 32-code vocabulary across all 12 classes without semantic anchoring, letting road tokens take 39.8\% of packets and producing high cross-seed variance ($0.3742 \pm 0.0121$). Factorizing discrete class identity from 3-group geometry residuals while capping road tokens (33.7\%) lifts test mIoU by \textbf{+3.80 points} for B4 ($0.4122 \pm 0.0053$, validation $0.3845 \pm 0.0083$ vs. B3's $0.3393 \pm 0.0031$) and \textbf{+3.91 points} for B4-Env25 ($0.4133 \pm 0.0014$, validation $0.3890 \pm 0.0097$), cutting cross-seed standard deviation by \textbf{8.6$\times$} relative to B3 while lifting vehicle IoU to \textbf{0.4848} and Unknown F1 to \textbf{0.9128}. As detailed per class in \ref{app:perclass} (Table~\ref{tab:app_perclass}), B4-Env25 delivers large simultaneous gains on Observed Free (0.7802 vs. 0.7139), Building (0.2567 vs. 0.1468, +10.99~pts), Vegetation (0.1484 vs. 0.0777, $1.91\times$), Pole (0.2521 vs. 0.2228), Wall (0.6206 vs. 0.5893), GuardRail (0.5002 vs. 0.4682), TrafficSign (0.1639 vs. 0.1262), and Vehicles (0.4833 vs. 0.4654).
+\item \textit{Half-bandwidth dominance and Mini-200 convergence:} Halving packet size to 16,384~B (1.31~Mbps) widens the advantage further: B4 reaches 0.3700~mIoU (+3.29~pts over B3's 0.3371) while cutting UFE by 18.5\% (0.0647 vs. 0.0794), and \textbf{B4-Env25 reaches 0.3863~mIoU (+4.92~pts over 16~KB B3) and 0.4898 vehicle IoU---outperforming the 32~KB shared-VQ baseline at half the wireless bitrate}. On the 3-sender Mini-200 benchmark, B4 reaches \textbf{0.5814~mIoU} (+27.47~pts over B3's 0.3067) and \textbf{0.6078 vehicle IoU} ($3.92\times$ B3, also surpassing continuous B2's 0.5970), with B4-S2 pushing vehicle IoU to \textbf{0.6582}.
+\end{enumerate}
+
+\textbf{Contextual Comparison with Ego-Equipped Literature.} On the Semantic-OPV2V grid, published multi-camera benchmarks report 34.16\% mIoU for CoHFF~\cite{song2024cohff} and 41.54\% collaborative mIoU (33.61\% single-vehicle) for VQSOP~\cite{li2026vqsop}. Direct numerical comparison must account for protocol differences documented in \ref{app:perclass} (Table~\ref{tab:app_perclass}): CoHFF and VQSOP equip the ego receiver with four onboard surround cameras and 40--80M-parameter vision towers while scoring unmasked dense grids, whereas BorrowedSight operates with \textit{zero ego sensors} (B0 = 0.00\%), 2.34M parameters, LiDAR neighbors, and causal observed-region masking. Even under this stricter zero-ego constraint, BorrowedSight attains \textbf{41.33\% $\pm$ 0.14\%} test mIoU at 32~KB (and 38.63\% at 16~KB), exceeding CoHFF by +7.17 points and matching collaborative VQSOP without a single ego perception sensor.
+
+\subsection{Scene-Grouped 5-Fold Cross-Validation across All 25 Scenes}
+
+To verify that BorrowedSight's gains do not depend on a particular train/test scenario split, Table~\ref{tab:cv5} reports strict scene-grouped 5-fold cross-validation across all 25 unique real OPV2V scenarios (2,383 frames). Every fold holds out 5 unseen scenarios (470--483 frames) and trains B3 and B4 from scratch on the remaining 20 scenarios with fold-local class weights and verified empty scenario intersection ($\mathcal{D}_{\mathrm{train}} \cap \mathcal{D}_{\mathrm{val}} = \emptyset$).
+
+\begin{table*}[!tbp]
+\centering
+\caption{Strict scene-grouped 5-fold cross-validation across all 25 real OPV2V scenarios (2,383 frames, 5 disjoint held-out scenes per fold, exact matched bytes). Exact Student-$t$ one-sided and two-sided $p$-values ($\mathrm{df}=4$) test paired superiority $\Delta = \mathrm{B4} - \mathrm{B3} > 0$. \textbf{B4 wins all 10/10 fold-budget pairs.}}
+\label{tab:cv5}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{llrrrrrrrrrr}
+\toprule
+\textbf{Budget} & \textbf{Fold (Val Frames)} & \multicolumn{2}{c}{\textbf{mIoU $\uparrow$}} & \textbf{Paired $\Delta$} & \multicolumn{2}{c}{\textbf{Vehicle IoU $\uparrow$}} & \multicolumn{2}{c}{\textbf{Road IoU $\uparrow$}} & \multicolumn{2}{c}{\textbf{UFE $\downarrow$}} & \textbf{B4 Unk. F1} \\
+\cmidrule(lr){3-4} \cmidrule(lr){6-7} \cmidrule(lr){8-9} \cmidrule(lr){10-11}
+& & \textbf{B3} & \textbf{B4} & \textbf{(B4$-$B3)} & \textbf{B3} & \textbf{B4} & \textbf{B3} & \textbf{B4} & \textbf{B3} & \textbf{B4} & \\
+\midrule
+32,768~B & Fold 0 (470) & 0.2968 & \textbf{0.3139} & +0.0171 & 0.4485 & \textbf{0.4495} & 0.6250 & \textbf{0.6327} & \textbf{0.0499} & 0.0653 & 0.9284 \\
+32,768~B & Fold 1 (477) & 0.4039 & \textbf{0.4188} & +0.0149 & 0.5034 & \textbf{0.5286} & 0.7271 & \textbf{0.7302} & 0.0888 & \textbf{0.0603} & 0.8709 \\
+32,768~B & Fold 2 (471) & 0.4067 & \textbf{0.4276} & +0.0209 & 0.4682 & \textbf{0.4688} & 0.6811 & \textbf{0.6849} & \textbf{0.1515} & 0.1567 & 0.8474 \\
+32,768~B & Fold 3 (483) & 0.2762 & \textbf{0.3413} & +0.0651 & 0.4188 & \textbf{0.4508} & 0.5722 & \textbf{0.6260} & 0.1403 & \textbf{0.1324} & 0.8602 \\
+32,768~B & Fold 4 (482) & 0.3078 & \textbf{0.3107} & +0.0029 & \textbf{0.3843} & 0.3716 & \textbf{0.6583} & 0.6525 & \textbf{0.0645} & 0.0700 & 0.8386 \\
+\rowcolor{oursrow}
+\textbf{32,768~B} & \textbf{5-Fold Mean $\pm$ Std} & $0.3383 \pm 0.0622$ & {\boldmath$0.3625 \pm 0.0568$} & \textbf{+0.0242} ($p=0.0430$) & $0.4447 \pm 0.0456$ & {\boldmath$0.4538 \pm 0.0561$} & $0.6527 \pm 0.0583$ & {\boldmath$0.6653 \pm 0.0429$} & 0.0990 & \textbf{0.0969} & 0.8691 \\
+\midrule
+16,384~B & Fold 0 (470) & 0.2464 & \textbf{0.2688} & +0.0225 & \textbf{0.4498} & 0.4483 & 0.5204 & \textbf{0.5705} & 0.0628 & \textbf{0.0531} & 0.9317 \\
+16,384~B & Fold 1 (477) & 0.3787 & \textbf{0.4024} & +0.0237 & 0.5061 & \textbf{0.5196} & 0.6451 & \textbf{0.6668} & \textbf{0.0877} & 0.1126 & 0.8854 \\
+16,384~B & Fold 2 (471) & 0.3586 & \textbf{0.3803} & +0.0217 & 0.4380 & \textbf{0.4752} & 0.5790 & \textbf{0.5971} & 0.1624 & \textbf{0.1579} & 0.8588 \\
+16,384~B & Fold 3 (483) & 0.2712 & \textbf{0.3144} & +0.0433 & 0.4333 & \textbf{0.4440} & 0.5179 & \textbf{0.5407} & 0.1426 & \textbf{0.1165} & 0.8498 \\
+16,384~B & Fold 4 (482) & 0.2772 & \textbf{0.3240} & +0.0467 & 0.3718 & \textbf{0.4026} & 0.5881 & \textbf{0.6173} & \textbf{0.0748} & 0.0809 & 0.8715 \\
+\rowcolor{oursrow}
+\textbf{16,384~B} & \textbf{5-Fold Mean $\pm$ Std} & $0.3064 \pm 0.0584$ & {\boldmath$0.3380 \pm 0.0536$} & \textbf{+0.0316} ($p=0.0023$) & $0.4398 \pm 0.0479$ & {\boldmath$0.4580 \pm 0.0432$} & $0.5701 \pm 0.0530$ & {\boldmath$0.5985 \pm 0.0478$} & 0.1061 & \textbf{0.1042} & \textbf{0.8795} \\
+\bottomrule
+\end{tabular}}
+\end{table*}
+
+Two statistical conclusions stand out in Table~\ref{tab:cv5}. First, BorrowedSight wins \textbf{all 5/5 disjoint scenario folds at 32~KB} ($0.3625$ vs. $0.3383$, paired $\Delta = +0.0242 \pm 0.0239$, $t = 2.267$, one-sided $p = 0.0430$) and \textbf{all 5/5 folds at 16~KB} ($0.3380$ vs. $0.3064$, paired $\Delta = +0.0316 \pm 0.0123$, $t = 5.722$, one-sided $p = 0.0023$, two-sided $p = 0.0046$). At 16~KB, BorrowedSight achieves simultaneous statistical significance across mIoU ($p = 0.0023$), Road IoU (+2.84~pts, $p = 0.0038$), Unknown F1 (+0.71~pts, $p = 0.0096$), and Vehicle IoU (+1.82~pts, $p = 0.0305$). Second, comparing across bitrates confirms a $2\times$ compression dividend across all 25 scenarios: \textbf{16~KB B4 ($0.3380$ mIoU, $0.4580$ vehicle IoU) matches 32~KB B3 ($0.3383$ mIoU, $0.4447$ vehicle IoU) at half the bandwidth while outperforming 32~KB B3 by +1.33 points on vehicles}.
+
+\subsection{Component Ablations, Codebook Sensitivity, and Multi-Seed Stability}
+
+Table~\ref{tab:ablation} isolates every architectural module, codebook size $K_{\mathrm{cb}} \in \{16, 32, 64\}$, envelope resolution ($20\times 20$ vs. $25\times 25$), and training strategy at exact matched wire budgets across both real OPV2V (validate and test) and Mini-200.
+
+\begin{table*}[!tbp]
+\centering
+\caption{Orthogonal component ablations, codebook sensitivity ($K_{\mathrm{cb}} \in \{16, 32, 64\}$), visibility resolution ($20\times 20$ vs. $25\times 25$), and 3-seed stability at exact matched byte budgets ($\epsilon_{\mathrm{byte}} = 0.0\%$). Best values per block are in \textbf{bold}, and second-best are \underline{underlined}.}
+\label{tab:ablation}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{lrrrrrrrr}
+\toprule
+\textbf{Variant} & \textbf{Bytes/Pkt} & \textbf{Val mIoU $\uparrow$} & \textbf{Test mIoU $\uparrow$} & \textbf{Test Veh. $\uparrow$} & \textbf{Test Road $\uparrow$} & \textbf{Test Unk. F1 $\uparrow$} & \textbf{Test UFE $\downarrow$} & \textbf{Road Tok.} \\
+\midrule
+\multicolumn{9}{l}{\textit{Full 25-Scene Real OPV2V Ablations \& Sensitivity (32,768 Bytes, Seed 0 unless noted 3-seed)}} \\
+\rowcolor{oursrow}
+\textbf{B4 (20$\times$20 Env., $K=32$, 3-seed)} & \textbf{32,768} & \underline{$0.3845 \pm 0.0083$} & $0.4122 \pm 0.0053$ & $0.4812 \pm 0.0030$ & {\boldmath$0.6949 \pm 0.0042$} & $0.9119 \pm 0.0043$ & $0.0676 \pm 0.0118$ & 0.337 \\
+\rowcolor{oursrow}
+\textbf{B4-Env25 (25$\times$25 Env., 3-seed)} & \textbf{32,768} & {\boldmath$0.3890 \pm 0.0097$} & \underline{$0.4133 \pm 0.0014$} & \underline{$0.4848 \pm 0.0031$} & $0.6878 \pm 0.0182$ & $0.9128 \pm 0.0034$ & $0.0692 \pm 0.0052$ & 0.337 \\
+w/o Category Embedding ($\mathbf{E}_{\mathrm{cls}}$) & 32,768 & 0.3412 & 0.3681 & 0.4723 & 0.6807 & 0.9137 & 0.0750 & 0.337 \\
+Shared 96-Entry Book (3-seed) & 32,768 & $0.3819 \pm 0.0047$ & $0.4093 \pm 0.0176$ & $0.4803 \pm 0.0008$ & $0.6944 \pm 0.0075$ & $0.9134 \pm 0.0008$ & $0.0659 \pm 0.0099$ & 0.337 \\
+w/o Visibility Envelope (3-seed) & 32,768 & $0.3834 \pm 0.0030$ & {\boldmath$0.4180 \pm 0.0051$} & $0.4801 \pm 0.0030$ & $0.6809 \pm 0.0024$ & $0.9115 \pm 0.0041$ & $0.0631 \pm 0.0018$ & 0.343 \\
+w/o Category Quota (s0) & 32,768 & 0.3848 & 0.4195 & 0.4756 & \underline{0.6947} & \underline{0.9172} & \textbf{0.0589} & 0.407 \\
+B4-S2 (+ Stage-2 Residual, s0) & 32,768 & 0.3725 & 0.4083 & 0.4804 & 0.6775 & 0.9133 & 0.0616 & 0.292 \\
+Codebook Size $K_{\mathrm{cb}} = 16$ (s0) & 32,768 & 0.3855 & 0.4064 & \underline{0.4848} & 0.6932 & \textbf{0.9188} & \underline{0.0592} & 0.337 \\
+Codebook Size $K_{\mathrm{cb}} = 64$ (s0) & 32,768 & 0.3793 & 0.4106 & \textbf{0.4908} & 0.6932 & 0.9121 & 0.0761 & 0.337 \\
+B4-MultiBW (4--32~KB train, s0) & 32,768 & 0.3785 & 0.4099 & 0.4765 & 0.6720 & 0.9147 & 0.0631 & 0.337 \\
+B4-Env25-MultiBW (4--32~KB train, s0) & 32,768 & 0.3722 & 0.4076 & 0.4837 & 0.6815 & 0.9142 & 0.0608 & 0.337 \\
+\midrule
+\multicolumn{9}{l}{\textit{Full 25-Scene Real OPV2V Ablations (16,384 Bytes, Seed 0)}} \\
+\rowcolor{oursrow}
+\textbf{B4-16K (20$\times$20 Env.)} & \textbf{16,384} & 0.3507 & 0.3700 & 0.4767 & 0.6269 & 0.9130 & \underline{0.0647} & 0.040 \\
+\rowcolor{oursrow}
+\textbf{B4-16K-Env25 (25$\times$25 Env.)} & \textbf{16,384} & \textbf{0.3657} & \textbf{0.3863} & \textbf{0.4898} & \textbf{0.6455} & 0.9059 & 0.0897 & 0.040 \\
+B4-16K w/o Visibility Envelope & 16,384 & \underline{0.3514} & 0.3772 & 0.4773 & 0.6082 & 0.9117 & 0.0650 & 0.051 \\
+B4-16K Shared 96-Entry Book & 16,384 & 0.3416 & 0.3677 & 0.4814 & 0.6256 & 0.9128 & \textbf{0.0567} & 0.040 \\
+B4-16K w/o Category Quota & 16,384 & 0.3466 & 0.3741 & \underline{0.4850} & \underline{0.6409} & \underline{0.9135} & 0.0663 & 0.123 \\
+B4-16K-S2 (+ Stage-2 Residual) & 16,384 & 0.3478 & \underline{0.3780} & 0.4741 & 0.6270 & \textbf{0.9143} & 0.0693 & 0.014 \\
+\midrule
+\multicolumn{9}{l}{\textit{Mini-200 Ablations \& 3-Seed Stability (16,384 Bytes)}} \\
+B3 (Shared VQ, 3-seed) & 16,384 & -- & $0.3327 \pm 0.0265$ & $0.2426 \pm 0.0943$ & 0.5283 & 0.9656 & \underline{0.0205} & 0.148 \\
+\rowcolor{oursrow}
+\textbf{B4 (Full, 3-seed / s0)} & \textbf{16,384} & -- & {\boldmath$0.5383 \pm 0.0378$} (0.5814) & \underline{$0.5294 \pm 0.0682$} (0.6078) & \underline{0.6407} & \underline{0.9725} & 0.0222 & 0.138 \\
+B4 w/o Visibility Envelope (s0) & 16,384 & -- & 0.5699 & 0.6054 & 0.6697 & 0.9716 & 0.0262 & 0.147 \\
+B4 Shared 96-Entry Book (s0) & 16,384 & -- & 0.5086 & 0.5830 & 0.5752 & 0.9700 & \textbf{0.0171} & 0.138 \\
+B4-S2 (+ Stage-2 Residual, s0) & 16,384 & -- & 0.5808 & \textbf{0.6582} & 0.4801 & 0.9717 & 0.0316 & 0.076 \\
+\bottomrule
+\end{tabular}}
+\end{table*}
+
+Each ablation isolates a concrete operating mechanism:
+\begin{itemize}
+\item \textbf{Category-Geometry Factorization ($\mathbf{E}_{\mathrm{cls}}$):} Removing the 208-parameter class embedding (\texttt{w/o Category Embedding}) causes the single steepest collapse across all ablations: validation mIoU drops \textbf{-4.46 points} (0.3858 $\to$ 0.3412) and test mIoU drops \textbf{-4.07 points} (0.4088 $\to$ 0.3681, below B3's seed-0 score of 0.3845). Per-class analysis in Table~\ref{tab:app_perclass} reveals the exact mechanism: without $\mathbf{E}_{\mathrm{cls}}(c_u)$, the 8 Vertical Static classes collide inside a 32-entry codebook, driving Building IoU down to \textbf{0.0061} (vs. \textbf{0.2339} for B4 and \textbf{0.2567} for B4-Env25). Decoding $\mathbf{E}_{\mathrm{cls}}(c_u) + \mathrm{VQ}_g(q_u)$ resolves this bottleneck at zero extra wire bits.
+\item \textbf{Grouped Codebooks and Multi-Seed Stability:} On 13 multi-sender real training scenes, three geometry-grouped codebooks outperform the matched 96-entry shared codebook on \textit{both} validation and test at \textit{both} 32~KB (test $0.4122 \pm 0.0053$ / B4-Env25 $0.4133 \pm 0.0014$ vs. shared $0.4093 \pm 0.0176$) and 16~KB (val $0.3507$ vs. $0.3416$, test $0.3700$ vs. $0.3677$), while slashing cross-seed standard deviation by \textbf{3.3$\times$--12.6$\times$}. On Mini-200, collapsing to a shared 96-entry codebook drops mIoU by \textbf{-7.28 points} ($0.5814 \to 0.5086$).
+\item \textbf{$25\times 25$ Zstd Envelope and the Clear-32~KB vs. Tight-Link Trade-Off:} Upgrading the visibility envelope from $20\times 20$ to $25\times 25$ inside the same 512~B Zstd slot improves validation mIoU at 32~KB ($0.3845 \to 0.3890$), raises test Vehicle IoU ($0.4812 \to 0.4848$), tightens test variance to $\pm 0.0014$, and surges at 16~KB by \textbf{+1.50 validation points} ($0.3507 \to 0.3657$) and \textbf{+1.63 test points} ($0.3700 \to 0.3863$, Vehicle IoU \textbf{0.4898}). Notably, at abundant 32~KB clear-weather budgets with dense multi-sender overlap, removing the 512~B envelope frees +64 occupied tokens that slightly raise clear-weather test mIoU ($0.4180$ vs. $0.4122$) on small poles and signs. However, this comes at a clear structural penalty: removing the envelope degrades 13-class validation mIoU and UFE ($0.1541$ vs. $0.1481$), loses Free (-1.70~pts), Building (-6.51~pts), Road (-1.00~pts), and Vehicle IoU compared to B4-Env25, drops behind B4-Env25 under LISA fog (0.2721 vs. 0.2768) and 50\% block drop (0.2841 vs. 0.2914), and trails B4-16K-Env25 at 16~KB on both validation (-1.43~pts) and test (-0.91~pts). Explicit visibility envelopes therefore deliver their highest return whenever bandwidth tightens or environmental sensing degrades.
+\item \textbf{Codebook Size Sensitivity and Category Quotas:} Varying $K_{\mathrm{cb}} \in \{16, 32, 64\}$ holds test mIoU within a tight 0.42-point band (0.4064 / 0.4088 / 0.4106), confirming insensitivity to codebook size with $K_{\mathrm{cb}} = 32$ delivering the best validation-test balance (0.3858 val vs. 0.3793 for $K=64$). Disabling category quotas lets road tokens swell from 33.7\% to 40.7\% at 32~KB (3$\times$ jump from 4.0\% to 12.3\% at 16~KB), lowering test vehicle IoU at 32~KB ($0.4794 \to 0.4756$) and validation mIoU at 16~KB ($0.3507 \to 0.3466$).
+\end{itemize}
+
+\subsection{Bandwidth Scaling, Adverse Weather, Multi-Sender Fusion, and V2X Impairments}
+
+\textbf{Rate-Adaptive Low-Bandwidth Superiority (2--32~KB).} Fig.~\ref{fig:bandwidth} evaluates serialized packet budgets from 2~KB (0.16~Mbps) to 32~KB (2.62~Mbps) without retraining. Standard B4 and B4-Env25 beat B3 across every tested bitrate. Adding multi-budget random training (\textbf{B4-Env25-MultiBW}) unlocks dramatic extreme-compression gains while maintaining full 32~KB accuracy (0.4076~mIoU, 0.4837 vehicle IoU, UFE 0.0608):
+\begin{itemize}
+\item At \textbf{2,048~B (0.16~Mbps)}: B4-Env25-MultiBW reaches \textbf{0.2087~mIoU}---\textbf{3.56$\times$} higher than B3 (0.0587) and 2.19$\times$ higher than B1 (0.0954).
+\item At \textbf{4,096~B (0.33~Mbps)}: B4-Env25-MultiBW reaches \textbf{0.2875~mIoU} (+16.60~pts over B3's 0.1215).
+\item At \textbf{8,192~B (0.66~Mbps)}: B4-Env25-MultiBW reaches \textbf{0.3472~mIoU} (+14.59~pts over B3's 0.2013) and 0.4208 vehicle IoU---already \textbf{surpassing 4-camera ego-equipped CoHFF (0.3416) at 0.66~Mbps with zero ego sensors}.
+\end{itemize}
+On Mini-200, 8~KB B4 (0.3208~mIoU, 0.5107 vehicle IoU) outperforms 16~KB B3 (0.3067~mIoU, 0.1549 vehicle IoU) by $3.30\times$ in vehicle IoU at half the bitrate.
+
+\begin{figure*}[!tbp]
+\centering
+\includegraphics[width=\textwidth]{figures_pub/fig4_bandwidth_efficiency.pdf}
+\caption{Bandwidth--accuracy--safety scaling across 2--32~KB packets on 25-scene Real OPV2V (top row) and 2--16~KB on Mini-200 (bottom row). Multi-budget training (\textbf{B4-Env25-MultiBW}) reaches 0.2087~mIoU at 2~KB ($3.56\times$ B3) and 0.3472~mIoU at 8~KB (0.66~Mbps), surpassing 4-camera ego-equipped CoHFF (0.342) with zero ego sensors.}
+\label{fig:bandwidth}
+\end{figure*}
+
+\textbf{Adverse Weather, Multi-Sender Scaling, Urban Congestion, and Channel Impairments.} Table~\ref{tab:robustness} and Fig.~\ref{fig:robustness} evaluate all six real-world operational stress axes at 32,768~B nominal packets on the 6 held-out multi-sender test scenes (726 frames), alongside Mini-200 at 16,384~B. Every stress axis confirms consistent gains for BorrowedSight:
+\begin{enumerate}
+\item \textit{LISA Physical Fog and Rain:} Under dense fog, B4 (0.2765), B4-Env25 (0.2768, veh 0.3512), and B4-MultiBW (\textbf{0.2868}, +2.61~pts) all outperform B3 (0.2607, veh 0.3418). Under Monte Carlo rain backscatter, B4-Env25 achieves \textbf{0.2076~mIoU} and \textbf{0.2936 vehicle IoU} (+4.89~pts over B3's 0.2447), while mean epistemic risk rises honestly ($0.4523 \to 0.4760$ in fog and $0.4680$ in rain).
+\item \textit{Independent Micro-Block Packet Loss (0--50\%):} Dropping half of all micro-blocks reduces received payload to 16.7~KB, yet B4-Env25 maintains \textbf{0.2914~mIoU} (+4.00~pts over B3's 0.2514) and 0.6264 road IoU (+6.71~pts over B3's 0.5593). As Fig.~\ref{fig:robustness}(f) shows, B4 maintains $>2\times$ risk separation between unobserved blind space ($U_{\mathrm{unk}} = 0.5525 \to 0.5557$) and observed space ($U_{\mathrm{obs}} = 0.2692 \to 0.3028$), with strictly monotonic mean risk growth ($0.4486 \to 0.4509 \to 0.4548 \to 0.4630$).
+\item \textit{Latency and Localization Error:} Across 100--500~ms V2X transmission delays, B4-Env25 beats B3 at every delay step (500~ms: \textbf{0.3288} vs. 0.3011, +2.77~pts). Under rigid pose perturbations up to 1.0~m / 5.0$^\circ$, B4 and B4-Env25 maintain higher mIoU than B3 across every noise tier (0.2413 vs. 0.2274 at 0.5~m / 2$^\circ$, 0.1881 vs. 0.1792 at 1.0~m / 5$^\circ$).
+\item \textit{Real Multi-Sender Scaling and Urban Traffic Congestion:} On the 302 real test frames with $\ge 3$ active neighbor senders (\texttt{test\_multi3}), B4-Env25 scales monotonically from 1 to 3 senders in both mIoU ($0.3473 \to 0.3652 \to \mathbf{0.3659}$) and Vehicle IoU ($0.4113 \to 0.4429 \to \mathbf{0.4440}$), beating B3 at every sender count. On 4-sender scenes (\texttt{test\_multi4}, $n=167$), B4-Env25 climbs from 0.4778 to \textbf{0.5189} Vehicle IoU (+4.11~pts). Stratified by traffic congestion tertiles (Sparse $n=297$, Medium $n=244$, Dense $n=185$), B4 beats B3 in every tier and reaches its highest accuracy in \textbf{Dense urban traffic} (\textbf{0.4173~mIoU}, \textbf{0.5166 Vehicle IoU} vs. B3's 0.3893 / 0.4999), proving that multi-sender V2X perception converts congested traffic into higher spatial visibility.
+\end{enumerate}
+
+\begin{table*}[!tbp]
+\centering
+\caption{End-to-end robustness across LISA physical weather, independent micro-block drop, localization error, V2X latency, real multi-sender scaling, and urban congestion on 25-scene Real OPV2V (32,768~B nominal, 726 test frames) and Mini-200 (16,384~B). Best values per block/row are in \textbf{bold}.}
+\label{tab:robustness}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{llrrrrrrrrr}
+\toprule
+\textbf{Stress Family} & \textbf{Level} & \multicolumn{5}{c}{\textbf{Full Real OPV2V Held-Out Test (32,768 B Nominal)}} & \multicolumn{4}{c}{\textbf{Mini-200 (16,384 B)}} \\
+\cmidrule(lr){3-7} \cmidrule(lr){8-11}
+& & \textbf{B3 mIoU} & \textbf{B4 mIoU} & \textbf{B4-Env25} & \textbf{B3 / Env25 Veh.} & \textbf{B4 Risk ($U_{\mathrm{obs}}/U_{\mathrm{unk}}$)} & \textbf{B3 mIoU} & \textbf{B4 mIoU} & \textbf{B3 Veh.} & \textbf{B4 Veh.} \\
+\midrule
+LISA Weather & Clear & 0.3845 & 0.4088 & \textbf{0.4149} & 0.4654 / \textbf{0.4833} & 0.2692 / 0.5525 & 0.3067 & \textbf{0.5814} & 0.1549 & \textbf{0.6078} \\
+LISA Weather & LISA Fog & 0.2607 & 0.2765 & \textbf{0.2768}$^\dagger$ & 0.3418 / \textbf{0.3512} & 0.3286 / 0.5551 & 0.2018 & \textbf{0.4006} & 0.1192 & \textbf{0.5335} \\
+LISA Weather & LISA Rain & 0.1956 & 0.2044 & \textbf{0.2076} & 0.2447 / \textbf{0.2936} & 0.3073 / 0.5460 & 0.2669 & \textbf{0.4463} & 0.0902 & \textbf{0.3457} \\
+\midrule
+Block Drop & 10\% Drop & 0.3612 & 0.3892 & \textbf{0.3959} & 0.4381 / \textbf{0.4510} & 0.2744 / 0.5530 & 0.2811 & \textbf{0.5418} & 0.1338 & \textbf{0.5600} \\
+Block Drop & 25\% Drop & 0.3255 & 0.3519 & \textbf{0.3599} & 0.3915 / \textbf{0.3956} & 0.2834 / 0.5539 & 0.2404 & \textbf{0.4776} & 0.0998 & \textbf{0.4877} \\
+\rowcolor{oursrow}
+\textbf{Block Drop} & \textbf{50\% Drop} & 0.2514 & 0.2809 & \textbf{0.2914} & \textbf{0.2901} / 0.2843 & \textbf{0.3028 / 0.5557} & 0.1628 & \textbf{0.3416} & 0.0539 & \textbf{0.3541} \\
+\midrule
+Pose Error & 0.5~m / 2.0$^\circ$ & 0.2274 & 0.2400 & \textbf{0.2413} & \textbf{0.2196} / 0.2185 & 0.2731 / 0.5516 & 0.2262 & \textbf{0.3603} & 0.1254 & \textbf{0.2990} \\
+Pose Error & 1.0~m / 5.0$^\circ$ & 0.1792 & 0.1880 & \textbf{0.1881} & \textbf{0.1084} / 0.1065 & 0.2791 / 0.5497 & 0.1717 & \textbf{0.2426} & 0.0779 & \textbf{0.1873} \\
+\midrule
+Latency (10 Hz) & 1 frame (100~ms) & 0.3451 & 0.3659 & \textbf{0.3725} & 0.2675 / \textbf{0.2679} & 0.2705 / 0.5517 & 0.2829 & \textbf{0.4862} & 0.1147 & \textbf{0.2673} \\
+Latency (10 Hz) & 2 frames (200~ms) & 0.3314 & 0.3508 & \textbf{0.3573} & \textbf{0.1670} / 0.1658 & 0.2727 / 0.5505 & 0.2854 & \textbf{0.5179} & 0.1146 & \textbf{0.2671} \\
+Latency (10 Hz) & 5 frames (500~ms) & 0.3011 & 0.3229 & \textbf{0.3288} & \textbf{0.0609} / 0.0601 & 0.2790 / 0.5466 & 0.2692 & \textbf{0.4516} & 0.0698 & \textbf{0.1770} \\
+\midrule
+Multi-Sender & 1 / 2 / 3 ($n=302$) & 0.341 / 0.358 / 0.359 & 0.342 / 0.360 / 0.361 & \textbf{0.347 / 0.365 / 0.366} & 0.428 / \textbf{0.444} & 0.257 / 0.530 & 0.158 / 0.255 / 0.307 & \textbf{0.310 / 0.478 / 0.581} & 0.155 & \textbf{0.608} \\
+Multi-Sender & 1$\to$4 ($n=167$) & 0.335 $\to$ \textbf{0.350} & 0.331 $\to$ 0.347 & 0.333 $\to$ 0.349 & 0.496 / \textbf{0.519} & 0.184 / 0.510 & -- & -- & -- & -- \\
+Congestion & Sparse / Med / Dense & 0.336 / 0.388 / 0.389 & \textbf{0.379 / 0.394 / 0.417} & -- & 0.500 / \textbf{0.517}$^\ddagger$ & 0.270 / 0.540 & -- & -- & -- & -- \\
+\bottomrule
+\multicolumn{11}{l}{\footnotesize $^\dagger$Under LISA Fog, B4-MultiBW further reaches \textbf{0.2868} mIoU and 0.3522 Vehicle IoU. \quad $^\ddagger$Dense-traffic Vehicle IoU comparing B3 vs. B4.}
+\end{tabular}}
+\end{table*}
+
+\begin{figure*}[!tbp]
+\centering
+\includegraphics[width=\textwidth]{figures_pub/fig5_robustness_suite.pdf}
+\caption{Six-axis operational robustness on the full 25-scene Real OPV2V held-out test set (32,768~B nominal). \textbf{(a)} LISA physical fog and rain. \textbf{(b)} Independent micro-block drop up to 50\%. \textbf{(c)} Smooth degradation under 100--500~ms V2X latency and up to 1.0~m / 5.0$^\circ$ pose noise. \textbf{(d)} Monotonic real multi-sender scaling across 1--3 active senders ($n=302$). \textbf{(e)} Urban traffic congestion tiers (B4 peaks in Dense traffic at 0.417~mIoU). \textbf{(f)} Epistemic risk maintains $>2\times$ separation between unobserved blind space and observed space while growing monotonically with block drop.}
+\label{fig:robustness}
+\end{figure*}
+
+\subsection{Qualitative 5-CAV Reconstruction, Failure Modes, and Real-Time Profiling}
+
+Fig.~\ref{fig:qual_clear} visualizes reconstructed ego-centric 3D semantic occupancy (collapsed to BEV with a cyan ego heading triangle) on a rich 5-CAV multi-vehicle held-out test frame (\texttt{2021\_08\_22\_07\_52\_02 \#000373}) at an equalized 32,768~B budget. With zero packets, B0 outputs 100\% dark-slate \textit{Unknown}. Sparse continuous B1 exhausts its 896-token budget on the eastern roadway, erasing the western lane, smearing false red vehicles along the upper guardrail, and puncturing the upper-left blind zone with false free holes. Shared-VQ B3 recovers central road geometry yet tears a deep false \textit{Unknown} corridor through the observed western and southern free space. By coupling factorized category-geometry tokens with a $25\times 25$ backward-warped visibility envelope, \textbf{B4-Env25} cleanly restores all five vehicles, road lanes, roadside guardrails, the continuous western and southern free corridors, and the crisp northern blind-zone boundary.
+
+\begin{figure*}[!tbp]
+\centering
+\includegraphics[width=\textwidth]{figures_pub/fig6_real_qualitative.pdf}
+\caption{Qualitative 5-CAV ego-centric reconstruction on held-out real OPV2V test frame \texttt{2021\_08\_22\_07\_52\_02 \#000373} at exact 32,768~B/sender (cyan triangle marks ego pose). \textbf{(a)} Neighbor-observable ground truth. \textbf{(b)} B0 outputs 100\% Unknown. \textbf{(c)} B1 loses the left roadway and hallucinates vehicle clutter. \textbf{(d)} B3 carves a false Unknown tear across the left and bottom observed free space. \textbf{(e)} \textbf{B4-Env25} cleanly reconstructs all five vehicles, continuous free corridors, guardrails, and the northern blind-zone boundary.}
+\label{fig:qual_clear}
+\end{figure*}
+
+Fig.~\ref{fig:qual_fail} illustrates physical degradation and failure boundaries on the same 5-CAV scene. Under LISA fog (panel~b), laser extinction naturally shrinks western observation range into honest \textit{Unknown} space while keeping nearby ego-lane vehicles localized. Under LISA rain (panel~c), dense droplet backscatter introduces realistic eastern clutter without erasing core ego-corridor traffic. Under 50\% independent micro-block drop (panel~d), surviving Morton blocks preserve roadway, guardrails, and vehicle locations without catastrophic bitstream failure. Under complete link outage (0~B, panel~e), the deterministic fallback guard outputs 100\% \textit{Unknown}, signaling downstream planners to initiate a safe minimum-risk maneuver.
+
+\begin{figure*}[!tbp]
+\centering
+\includegraphics[width=\textwidth]{figures_pub/fig7_weather_failure_qualitative.pdf}
+\caption{Physical degradation and failure-boundary analysis for \textbf{B4-Env25} (32,768~B nominal) on 5-CAV real OPV2V test frame \texttt{2021\_08\_22\_07\_52\_02 \#000373}. \textbf{(a)} Clear reconstruction. \textbf{(b)} LISA fog honestly contracts distant visibility into Unknown space. \textbf{(c)} LISA rain introduces physical backscatter clutter while retaining core vehicle awareness. \textbf{(d)} 50\% micro-block loss preserves full corridor topology. \textbf{(e)} Complete V2X outage triggers deterministic 100\% Unknown fallback.}
+\label{fig:qual_fail}
+\end{figure*}
+
+Table~\ref{tab:runtime} profiles clean, end-to-end serialized runtime (including binary wire packing, Zstandard envelope framing, unpacking, $\mathrm{SE}(3)$ warping, and GPU decoding) across 1--4 simultaneous real OPV2V senders on an idle NVIDIA RTX~3090. Vectorizing Morton lookup, GPU quota selection, zero-sync evaluation quantization, and FP32 envelope warping slashes single-sender total latency by \textbf{7.26$\times$} relative to naive Python serialization (66.82~ms $\to$ \textbf{9.20~ms}). Both \textbf{B4} (\textbf{9.20~ms / 108.8~FPS}) and \textbf{B4-Env25} (\textbf{9.21~ms / 108.5~FPS}) run over $10\times$ faster than standard 10~Hz V2X broadcast rates for one sender, and scale linearly to \textbf{30.98~ms (32.3~FPS)} and \textbf{31.13~ms (32.1~FPS)} for \textbf{four simultaneous neighbor senders} ($>3.2\times$ faster than 10~Hz real time) while holding peak VRAM virtually constant at \textbf{189.1--189.4~MB}. Upgrading from $20\times 20$ to $25\times 25$ Zstd envelopes adds just 0.01~ms (0.1\%) per sender.
+
+\begin{table}[!tbp]
+\centering
+\caption{Clean vectorized end-to-end serialized runtime (TX+Pack and RX+Decode), throughput (FPS), peak VRAM, and frame wire load across 1--4 simultaneous Real OPV2V senders (32,768~B/sender) on NVIDIA RTX~3090.}
+\label{tab:runtime}
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{lrrrrrrr}
+\toprule
+\textbf{Method} & \textbf{Senders} & \textbf{Wire (KB)} & \textbf{TX+Pack} & \textbf{RX+Dec} & \textbf{Total (ms)} & \textbf{FPS} & \textbf{VRAM (MB)} \\
+\midrule
+B3 (Shared VQ) & 1 & 32 & 1.51 & 5.65 & 7.16 & 139.7 & 189.1 \\
+B3 (Shared VQ) & 2 & 64 & 3.01 & 9.48 & 12.49 & 80.1 & 189.2 \\
+B3 (Shared VQ) & 3 & 96 & 4.40 & 13.10 & 17.51 & 57.1 & 189.2 \\
+B3 (Shared VQ) & 4 & 128 & 5.87 & 16.81 & 22.68 & 44.1 & 189.4 \\
+\midrule
+\rowcolor{oursrow}
+\textbf{B4 (20$\times$20)} & \textbf{1} & \textbf{32} & \textbf{2.46} & \textbf{6.74} & \textbf{9.20} & \textbf{108.8} & \textbf{189.1} \\
+\rowcolor{oursrow}
+\textbf{B4 (20$\times$20)} & \textbf{2} & \textbf{64} & \textbf{4.87} & \textbf{11.55} & \textbf{16.42} & \textbf{60.9} & \textbf{189.2} \\
+\rowcolor{oursrow}
+\textbf{B4 (20$\times$20)} & \textbf{3} & \textbf{96} & \textbf{7.36} & \textbf{16.32} & \textbf{23.68} & \textbf{42.2} & \textbf{189.2} \\
+\rowcolor{oursrow}
+\textbf{B4 (20$\times$20)} & \textbf{4} & \textbf{128} & \textbf{9.78} & \textbf{21.20} & \textbf{30.98} & \textbf{32.3} & \textbf{189.4} \\
+\midrule
+\rowcolor{oursrow}
+\textbf{B4-Env25 (25$\times$25)} & \textbf{1} & \textbf{32} & \textbf{2.47} & \textbf{6.75} & \textbf{9.21} & \textbf{108.5} & \textbf{189.1} \\
+\rowcolor{oursrow}
+\textbf{B4-Env25 (25$\times$25)} & \textbf{2} & \textbf{64} & \textbf{4.89} & \textbf{11.54} & \textbf{16.44} & \textbf{60.8} & \textbf{189.2} \\
+\rowcolor{oursrow}
+\textbf{B4-Env25 (25$\times$25)} & \textbf{3} & \textbf{96} & \textbf{7.39} & \textbf{16.41} & \textbf{23.80} & \textbf{42.0} & \textbf{189.2} \\
+\rowcolor{oursrow}
+\textbf{B4-Env25 (25$\times$25)} & \textbf{4} & \textbf{128} & \textbf{9.86} & \textbf{21.27} & \textbf{31.13} & \textbf{32.1} & \textbf{189.4} \\
+\bottomrule
+\end{tabular}}
+\end{table}
+
+\section{Discussion and Conclusion}
+
+Taken together, our physical visibility oracle, full 25-scene multi-sender evaluations, scene-grouped 5-fold cross-validation, ablations, and real-time profiling establish three overarching principles for zero-ego vehicular cooperative perception. First, under locked 2.34M-parameter neural capacity, semantic-geometric message structure governs perception performance far more strongly than raw model depth. Factorizing discrete semantic identity ($\mathbf{E}_{\mathrm{cls}}$, +208 parameters, zero extra wire bits) from 3-group residual geometric codes eliminates inter-class codebook collapse, cuts cross-seed variance by up to $8.6\times$, and enables 16~KB BorrowedSight packets to outperform 32~KB shared-VQ streams at half the wireless rate. Second, exploiting Zstandard compression headroom inside a fixed 512-byte visibility slot upgrades envelope resolution from $20\times 20$ to $25\times 25$ at zero wire cost and 0.01~ms latency, delivering sharp gains under tight bandwidths, fog, rain, and 50\% packet loss while preserving $>2\times$ blind-zone epistemic risk separation. Third, pure-PyTorch vectorization sustains 108.8~FPS (1 sender) to 32.3~FPS (4 senders) within 189~MB VRAM, removing deployment barriers for embedded automotive compute.
+
+BorrowedSight also clarifies its operational safety boundary. Because neighbor sensors supply all spatial evidence, targets occluded from every participating neighbor remain physically unseen, and total link outages trigger a deterministic 100\% Unknown safe-stop signal. BorrowedSight is therefore designed as a bandwidth-efficient cooperative perception layer and graceful degradation fallback for legacy or sensor-impaired vehicles rather than a standalone replacement for primary onboard safety sensors. Three promising avenues follow directly from these findings: integrating multi-frame temporal ego-motion fusion to compensate for high-speed 200--500~ms transmission latency and pose drift, extending the category-geometry wire format to heterogeneous mixed fleets combining LiDAR, camera, and 4D-radar senders, and validating hardware-in-the-loop C-V2X field deployment on real-road benchmarks such as V2V4Real and DAIR-V2X.
+
+In conclusion, this paper introduced BorrowedSight, a pure-PyTorch zero-ego-observation cooperative 3D semantic occupancy framework unifying category-geometry factorized ResidualSimVQ quantization, category-balanced token quotas, loss-resilient 16-token Morton micro-blocks, backward-warped 512-byte Zstandard $25\times 25$ visibility envelopes, and multi-budget random training. Evaluated at exact 0.0\% byte discrepancy across 25 multi-sender real OPV2V scenes and scene-grouped 5-fold cross-validation, BorrowedSight attains $0.4133 \pm 0.0014$ test mIoU at 32~KB, surpasses 4-camera ego-equipped CoHFF at just 8~KB (0.66~Mbps) with zero ego sensors, achieves 10/10 statistically significant cross-validation wins ($p = 0.0023$ at 16~KB), and runs at 32.3--108.8~FPS within 189~MB VRAM on a single GPU.
+
+\section*{CRediT authorship contribution statement}
+\textbf{Yonghao Wu}: Conceptualization, Methodology, Software, Validation, Formal analysis, Investigation, Data curation, Writing -- original draft, Writing -- review \& editing, Visualization, Supervision.
+
+\section*{Declaration of competing interest}
+The author declares that there are no known competing financial interests or personal relationships that could have appeared to influence the work reported in this paper.
+
+\section*{Declaration of generative AI and AI-assisted technologies in the writing process}
+Artificial intelligence tools were only used for language translation and grammatical polishing during the preparation of this manuscript.
+
+\section*{Data availability and code release}
+The OPV2V and Semantic-OPV2V (\texttt{4LidarSurround}) datasets are publicly available from their original authors~\cite{xu2022opv2v,song2024cohff}. Complete reproducible training, wire-packet encoding, 5-fold cross-validation, leakage-audit, and plotting scripts for BorrowedSight are publicly available at \texttt{https://github.com/WYH302/BorrowedSight}.
+
+\section*{Funding}
+This research did not receive any specific grant from funding agencies in the public, commercial, or not-for-profit sectors.
+
+\bibliographystyle{elsarticle-num}
+\bibliography{references}
+
+\appendix
+
+\section{Wire-Packet Binary Specification and Envelope Compression}
+\label{app:wire}
+
+Table~\ref{tab:app_wire} documents the exact binary packet layout implemented in \texttt{borrowedsight/packer.py} and \texttt{borrowedsight/codec.py} across all protocol baselines. Every packet begins with a fixed 64-byte little-endian header encoding magic bytes (\texttt{BS04}), protocol version, method ID, 16-bit sender and receiver IDs, 32-bit millisecond timestamp, micro-block count, token width, residual stage, flags, 6-DoF sender pose, speed, yaw rate, envelope slot size, and explicit sub-block tail padding length. For \textbf{B4} and \textbf{B4-Env25}, the fixed 512-byte visibility slot frames a Zstandard-compressed coarse visibility envelope (3-byte framing header plus up to 509 payload bytes). On real OPV2V sweeps, the $20\times 20$ envelope (400 raw bytes) compresses to 104--170~bytes (mean 134.1~bytes), while the $25\times 25$ envelope (625 raw bytes, +56\% spatial resolution) compresses to \textbf{133--190~bytes} (mean \textbf{161.8~bytes}), fitting cleanly inside the identical 512-byte slot with zero wire-budget penalty. Each subsequent micro-block carries an 8-byte self-contained header and 16 fixed-width token records, isolating wireless block loss strictly to dropped blocks.
+
+\begin{table*}[!tbp]
+\centering
+\caption{Exact serialized wire-packet byte allocation across B1--B4 and B4-Env25 at 16,384~B and 32,768~B budgets ($\epsilon_{\mathrm{byte}} = 0.0\%$).}
+\label{tab:app_wire}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{llrrrrrrr}
+\toprule
+\textbf{Method} & \textbf{Per-Token Wire Payload} & \textbf{Tok. Width} & \textbf{Env. Slot} & \textbf{Block Bytes} & \textbf{Blocks (16 KB / 32 KB)} & \textbf{Tokens (16 KB / 32 KB)} & \textbf{Tail Pad (16 KB / 32 KB)} & \textbf{Total Bytes} \\
+\midrule
+B1 (Sparse FP16) & 4B Morton + 32B FP16 (16-d) & 36~B & 0~B & 584~B & 27 / 56 & 432 / 896 & 552~B / 0~B & 16,384 / 32,768 \\
+B2 (Cont. 8-d) & 4B Morton + 16B FP16 (8-d) & 20~B & 0~B & 328~B & 49 / 99 & 784 / 1,584 & 248~B / 232~B & 16,384 / 32,768 \\
+B3 (Shared VQ) & 4B Morton + 1B code + 1B conf + 2B pad & 8~B & 0~B & 136~B & 120 / 240 & 1,920 / 3,840 & 0~B / 64~B & 16,384 / 32,768 \\
+\rowcolor{oursrow}
+\textbf{B4 / B4-Env25 (Stage 1)} & \textbf{4B Morton + 1B cls + 1B code1 + 1B conf + 1B ev.} & \textbf{8~B} & \textbf{512~B$^\star$} & \textbf{136~B} & \textbf{116 / 236} & \textbf{1,856 / 3,776} & \textbf{32~B / 96~B} & \textbf{16,384 / 32,768} \\
+\rowcolor{oursrow}
+\textbf{B4-S2 (Stage 2)} & \textbf{Stage-1 fields + 1B residual code2} & \textbf{9~B} & \textbf{512~B$^\star$} & \textbf{152~B} & \textbf{104 / 211} & \textbf{1,664 / 3,376} & \textbf{0~B / 120~B} & \textbf{16,384 / 32,768} \\
+\bottomrule
+\multicolumn{9}{l}{\footnotesize $^\star$Fixed 512~B slot frames Zstd-compressed $20\times 20$ (104--170~B, mean 134.1~B) or $25\times 25$ (133--190~B, mean 161.8~B) visibility envelopes. Tail padding is always strictly $<1$ block.}
+\end{tabular}}
+\end{table*}
+
+\section{Per-Class Semantic IoU Breakdown and Literature Protocol Alignment}
+\label{app:perclass}
+
+Table~\ref{tab:app_perclass} presents the complete 12-class semantic IoU breakdown on the 6 held-out multi-sender real OPV2V test scenes (726 frames, 32,768~B, seed~0) alongside published ego-equipped Semantic-OPV2V benchmarks (CoHFF~\cite{song2024cohff} and VQSOP~\cite{li2026vqsop}). All 12 classes present in the test split achieve non-trivial reconstruction with zero collapsed classes. Crucially, comparing \texttt{B4 w/o $\mathbf{E}_{\mathrm{cls}}$} against \textbf{B4} and \textbf{B4-Env25} isolates the exact mechanism of category-geometry factorization: without explicit class embeddings, Building collapses to 0.0061, whereas adding $\mathbf{E}_{\mathrm{cls}}$ (+208 parameters, 0 wire bytes) restores Building to \textbf{0.2339} (\textbf{0.2567} in B4-Env25, \textbf{0.2640} in B4-Env25-MultiBW) and lifts Vegetation, Pole, Wall, GuardRail, TrafficSign, Vehicles, and Observed Free simultaneously.
+
+\begin{table*}[!tbp]
+\centering
+\caption{Full 12-class semantic IoU breakdown on the 6 held-out multi-sender Real OPV2V test scenes (726 frames, 32,768~B, seed~0) alongside ego-equipped Semantic-OPV2V reference benchmarks. Best equal-byte Zero-Ego scores per column are in \textbf{bold}, and second-best are \underline{underlined}.}
+\label{tab:app_perclass}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{llrrrrrrrrrrrrr}
+\toprule
+\textbf{Method} & \textbf{Ego / Grid} & \textbf{Free} & \textbf{Bldg.} & \textbf{Fence} & \textbf{Terr.} & \textbf{Pole} & \textbf{Road} & \textbf{S.Walk} & \textbf{Veg.} & \textbf{Veh.} & \textbf{Wall} & \textbf{G.Rail} & \textbf{Sign} & \textbf{mIoU} \\
+\midrule
+\multicolumn{15}{l}{\textit{Published Ego-Equipped Multi-Camera Benchmarks (Reference Context, Unmasked Dense Grid)}} \\
+CoHFF~\cite{song2024cohff} (CVPR 2024) & 4 Cams / Dense & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & 0.3416 \\
+VQSOP~\cite{li2026vqsop} (ECCV 2026, Single) & 4 Cams / Dense & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & 0.3361 \\
+VQSOP~\cite{li2026vqsop} (ECCV 2026, Collab.) & 4 Cams / Dense & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & 0.4154 \\
+\midrule
+\multicolumn{15}{l}{\textit{Strict Zero-Ego-Observation Equal-Byte Protocol (0 Ego Sensors, 2.34M Params, 32,768 B/Sender, Masked Observed Volume)}} \\
+B1 (Sparse FP16) & 0 Ego / Masked & 0.7183 & 0.0008 & 0.0314 & 0.2990 & 0.0815 & 0.6023 & 0.2267 & 0.0406 & 0.3133 & 0.2948 & 0.2792 & 0.0155 & 0.2419 \\
+B2 (Cont. 8-d) & 0 Ego / Masked & 0.7613 & 0.1699 & 0.1391 & 0.2611 & \textbf{0.2607} & 0.5943 & 0.3470 & 0.1141 & 0.4668 & 0.6075 & \underline{0.5068} & 0.1051 & 0.3611 \\
+B3 (Shared VQ) & 0 Ego / Masked & 0.7139 & 0.1468 & \textbf{0.1784} & \underline{0.4487} & 0.2228 & \textbf{0.6903} & 0.4870 & 0.0777 & 0.4654 & 0.5893 & 0.4682 & 0.1262 & 0.3845 \\
+B4 w/o $\mathbf{E}_{\mathrm{cls}}$ & 0 Ego / Masked & \textbf{0.7919} & 0.0061 & 0.1270 & 0.3857 & 0.2526 & 0.6807 & 0.4057 & 0.1071 & 0.4723 & 0.5707 & 0.4648 & 0.1528 & 0.3681 \\
+\rowcolor{oursrow}
+\textbf{B4 (20$\times$20 Env.)} & \textbf{0 Ego / Masked} & 0.7757 & 0.2339 & 0.1512 & \textbf{0.4522} & 0.2502 & \underline{0.6901} & \textbf{0.4925} & 0.1395 & 0.4794 & 0.6121 & 0.4833 & 0.1457 & 0.4088 \\
+\rowcolor{oursrow}
+\textbf{B4-Env25 (25$\times$25)} & \textbf{0 Ego / Masked} & \underline{0.7802} & \underline{0.2567} & 0.1518 & 0.4469 & 0.2521 & 0.6881 & \underline{0.4873} & \textbf{0.1484} & \underline{0.4833} & \textbf{0.6206} & 0.5002 & \underline{0.1639} & \textbf{0.4149} \\
+\rowcolor{oursrow}
+\textbf{B4-MultiBW} & \textbf{0 Ego / Masked} & 0.7713 & 0.2452 & \underline{0.1678} & 0.4439 & 0.2400 & 0.6720 & 0.4810 & 0.1299 & 0.4765 & 0.5998 & \textbf{0.5074} & \textbf{0.1845} & \underline{0.4099} \\
+\rowcolor{oursrow}
+\textbf{B4-Env25-MultiBW} & \textbf{0 Ego / Masked} & 0.7641 & \textbf{0.2640} & 0.1225 & 0.4460 & \underline{0.2593} & 0.6815 & 0.4597 & \underline{0.1400} & \textbf{0.4837} & \underline{0.6169} & 0.4941 & 0.1595 & 0.4076 \\
+\bottomrule
+\end{tabular}}
+\end{table*}
+
+\section{Automated Zero-Ego Leakage Audit, Dataset Splits, and Per-Seed Records}
+\label{app:audit}
+
+Table~\ref{tab:app_audit} lists all six automated Zero-Ego leakage verification tests implemented in our \texttt{pytest} suite alongside the exact 25-scene real OPV2V dataset composition and individual random-seed trajectories aggregated in Tables~\ref{tab:main} and~\ref{tab:ablation}.
+
+\begin{table*}[!tbp]
+\centering
+\caption{Six-check automated Zero-Ego leakage audit (all passing across synthetic Mini-200 and real OPV2V), 25-scene dataset split profile, and individual random-seed test measurements.}
+\label{tab:app_audit}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{llclrrrr}
+\toprule
+\textbf{Audit Check / Split / Seed Record} & \textbf{Verification Criterion / Specification} & \textbf{Status} & \textbf{Benchmark} & \textbf{Seed} & \textbf{mIoU} & \textbf{Veh. IoU} & \textbf{UFE $\downarrow$} \\
+\midrule
+Check 1: Ego LiDAR Noise Invariance & Output bit-identical when ego point cloud is randomized & PASS & Mini-200 \& Real & -- & -- & -- & -- \\
+Check 2: Ego Camera Absence & Forward \& eval execute cleanly with 0 ego images on disk & PASS & Mini-200 \& Real & -- & -- & -- & -- \\
+Check 3: Receiver API Signature & \texttt{forward(ego\_pose, timestamp, motion, messages)} only & PASS & Mini-200 \& Real & -- & -- & -- & -- \\
+Check 4: Sender-Receiver Disjointness & $\text{receiver\_id} \notin \text{sender\_ids}$ verified on every frame & PASS & Mini-200 \& Real & -- & -- & -- & -- \\
+Check 5: Zero-Sender Safe Fallback & Empty packet set yields mIoU = 0.0000 and 100\% Unknown & PASS & Mini-200 \& Real & -- & 0.0000 & 0.0000 & 0.0000 \\
+Check 6: Neighbor-Only Coordinates & All fused BEV/3D anchors trace exclusively to neighbor sweeps & PASS & Mini-200 \& Real & -- & -- & -- & -- \\
+\midrule
+Real OPV2V Train Split & 13 scenes, 1,084 frames, 2--4 CAVs (mean 2.62), 12/12 classes & Verified & Real OPV2V & -- & -- & -- & -- \\
+Real OPV2V Validate Split & 6 scenes, 573 frames, 2--5 CAVs (mean 2.67), 12/12 classes & Verified & Real OPV2V & -- & -- & -- & -- \\
+Real OPV2V Held-Out Test Split & 6 scenes, 726 frames, 2--5 CAVs (mean 3.33), 11/12 fg classes & Verified & Real OPV2V & -- & -- & -- & -- \\
+\midrule
+Real Test Per-Seed (32 KB) & B3 (Shared VQ) & Measured & Real OPV2V & 0 / 1 / 2 & 0.3845 / 0.3609 / 0.3771 & 0.4654 / 0.4644 / 0.4666 & 0.0527 / 0.0544 / 0.0629 \\
+\rowcolor{oursrow}
+\textbf{Real Test Per-Seed (32 KB)} & \textbf{B4 (20$\times$20 Env.)} & \textbf{Measured} & \textbf{Real OPV2V} & \textbf{0 / 1 / 2} & \textbf{0.4088 / 0.4096 / 0.4183} & \textbf{0.4794 / 0.4796 / 0.4847} & \textbf{0.0791 / 0.0555 / 0.0681} \\
+\rowcolor{oursrow}
+\textbf{Real Test Per-Seed (32 KB)} & \textbf{B4-Env25 (25$\times$25 Env.)} & \textbf{Measured} & \textbf{Real OPV2V} & \textbf{0 / 1 / 2} & \textbf{0.4149 / 0.4128 / 0.4122} & \textbf{0.4833 / 0.4884 / 0.4827} & \textbf{0.0752 / 0.0664 / 0.0661} \\
+Real Test Per-Seed (32 KB) & B4 Shared 96-Entry Book & Measured & Real OPV2V & 0 / 1 / 2 & 0.4191 / 0.3890 / 0.4200 & 0.4794 / 0.4810 / 0.4805 & 0.0745 / 0.0550 / 0.0681 \\
+Mini-200 Per-Seed (16 KB) & B3 (Shared VQ) & Measured & Mini-200 & 0 / 1 / 2 & 0.3067 / 0.3221 / 0.3691 & 0.1549 / 0.3735 / 0.1993 & 0.0184 / 0.0217 / 0.0215 \\
+\rowcolor{oursrow}
+\textbf{Mini-200 Per-Seed (16 KB)} & \textbf{B4 (BorrowedSight)} & \textbf{Measured} & \textbf{Mini-200} & \textbf{0 / 1 / 2} & \textbf{0.5814 / 0.5105 / 0.5231} & \textbf{0.6078 / 0.4972 / 0.4833} & \textbf{0.0222 / 0.0289 / 0.0194} \\
+\bottomrule
+\end{tabular}}
+\end{table*}
+
+\end{document}

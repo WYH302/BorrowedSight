@@ -1,0 +1,300 @@
+\begin{thebibliography}{10}
+\expandafter\ifx\csname url\endcsname\relax
+  \def\url#1{\texttt{#1}}\fi
+\expandafter\ifx\csname urlprefix\endcsname\relax\def\urlprefix{URL }\fi
+\expandafter\ifx\csname href\endcsname\relax
+  \def\href#1#2{#2} \def\path#1{#1}\fi
+
+\bibitem{bijelic2020fog}
+M.~Bijelic, T.~Gruber, F.~Mannan, F.~Kraus, W.~Ritter, K.~Dietmayer, F.~Heide,
+  Seeing through fog without seeing fog: Deep multimodal sensor fusion in
+  unseen adverse weather, in: Proceedings of the IEEE/CVF Conference on
+  Computer Vision and Pattern Recognition (CVPR), 2020, pp. 11682--11692.
+
+\bibitem{kilic2021lisa}
+V.~Kilic, D.~Hegde, V.~Sindagi, A.~B. Cooper, M.~A. Foster, V.~M. Patel,
+  {LiDAR} light scattering augmentation ({LISA}): Physics-based simulation of
+  adverse weather conditions for {3D} object detection, arXiv preprint
+  arXiv:2107.07004 (2021).
+
+\bibitem{etsi2023cpm}
+{ETSI}, Intelligent transport systems ({ITS}); vehicular communications; basic
+  set of applications; collective perception service; release 2, Tech. Rep.
+  ETSI TS 103 324 V2.1.1, European Telecommunications Standards Institute
+  (2023).
+
+\bibitem{chen2019fcooper}
+Q.~Chen, X.~Ma, S.~Tang, J.~Guo, Q.~Yang, S.~Fu, {F-Cooper}: Feature based
+  cooperative perception for autonomous vehicle edge computing system using
+  {3D} point clouds, in: Proceedings of the ACM/IEEE Symposium on Edge
+  Computing (SEC), 2019, pp. 88--100.
+
+\bibitem{wang2020v2vnet}
+T.-H. Wang, S.~Manivasagam, M.~Liang, B.~Yang, W.~Zeng, R.~Urtasun, {V2VNet}:
+  Vehicle-to-vehicle communication for joint perception and prediction, in:
+  Proceedings of the European Conference on Computer Vision (ECCV), 2020, pp.
+  605--621.
+
+\bibitem{xu2022v2xvit}
+R.~Xu, H.~Xiang, Z.~Tu, X.~Xia, M.-H. Yang, J.~Ma, {V2X-ViT}:
+  Vehicle-to-everything cooperative perception with vision transformer, in:
+  Proceedings of the European Conference on Computer Vision (ECCV), 2022, pp.
+  107--124.
+
+\bibitem{xu2022cobevt}
+R.~Xu, Z.~Tu, H.~Xiang, W.~Shao, B.~Zhou, J.~Ma, {CoBEVT}: Cooperative bird's
+  eye view semantic segmentation with sparse transformers, in: Proceedings of
+  the Conference on Robot Learning (CoRL), 2022, pp. 989--1000.
+
+\bibitem{song2024cohff}
+R.~Song, C.~Liang, H.~Cao, Z.~Yan, W.~Zimmer, M.~Gross, A.~Festag, A.~Knoll,
+  Collaborative semantic occupancy prediction with hybrid feature fusion in
+  connected automated vehicles, in: Proceedings of the IEEE/CVF Conference on
+  Computer Vision and Pattern Recognition (CVPR), 2024, pp. 17996--18006.
+
+\bibitem{wu2025co3sop}
+H.~Wu, M.~Tsukada, et~al., A synthetic benchmark for collaborative {3D}
+  semantic occupancy prediction in {V2X}-enabled autonomous driving, arXiv
+  preprint arXiv:2502.18015 (2025).
+
+\bibitem{li2026vqsop}
+F.~Li, C.~Zhang, G.~Chen, Sparse-aware vector quantization for
+  bandwidth-efficient collaborative {3D} semantic occupancy prediction, in:
+  Proceedings of the European Conference on Computer Vision (ECCV), 2026.
+
+\bibitem{hu2024codefilling}
+Y.~Hu, J.~Peng, S.~Liu, J.~Ge, S.~Liu, S.~Chen, Communication-efficient
+  collaborative perception via information filling with codebook, in:
+  Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern
+  Recognition (CVPR), 2024, pp. 15481--15490.
+
+\bibitem{zhu2025simvq}
+Y.~Zhu, B.~Li, Y.~Xin, Z.~Xia, L.~Xu, Addressing representation collapse in
+  vector quantized models with one linear layer, in: Proceedings of the
+  IEEE/CVF International Conference on Computer Vision (ICCV), 2025.
+
+\bibitem{fifty2025rotation}
+C.~Fifty, R.~G. Junkins, D.~Duan, A.~Iyengar, J.~W. Liu, E.~Amid, S.~Thrun,
+  C.~R{\'e}, Restructuring vector quantization with the rotation trick, in:
+  Proceedings of the International Conference on Learning Representations
+  (ICLR), 2025.
+
+\bibitem{chen2019cooper}
+Q.~Chen, S.~Tang, Q.~Yang, S.~Fu, Cooper: Cooperative perception for connected
+  autonomous vehicles based on {3D} point clouds, in: Proceedings of the IEEE
+  International Conference on Distributed Computing Systems (ICDCS), 2019, pp.
+  514--524.
+
+\bibitem{xu2022opv2v}
+R.~Xu, H.~Xiang, X.~Xia, X.~Han, J.~Li, J.~Ma, {OPV2V}: An open benchmark
+  dataset and fusion pipeline for perception with vehicle-to-vehicle
+  communication, in: Proceedings of the IEEE International Conference on
+  Robotics and Automation (ICRA), 2022, pp. 2583--2589.
+
+\bibitem{yu2022dairv2x}
+H.~Yu, Y.~Luo, M.~Shu, Y.~Huo, Z.~Yang, Y.~Shi, Z.~Guo, H.~Li, X.~Hu, J.~Yuan,
+  Z.~Nie, {DAIR-V2X}: A large-scale dataset for vehicle-infrastructure
+  cooperative {3D} object detection, in: Proceedings of the IEEE/CVF Conference
+  on Computer Vision and Pattern Recognition (CVPR), 2022, pp. 21361--21370.
+
+\bibitem{li2022v2xsim}
+Y.~Li, D.~Ma, Z.~An, Z.~Wang, Y.~Zhong, S.~Chen, C.~Feng, {V2X-Sim}:
+  Multi-agent collaborative perception dataset and benchmark for autonomous
+  driving, IEEE Robotics and Automation Letters 7~(4) (2022) 10914--10921.
+
+\bibitem{li2021disconet}
+Y.~Li, S.~Ren, P.~Wu, S.~Chen, C.~Feng, W.~Zhang, Learning distilled
+  collaboration graph for multi-agent perception, in: Advances in Neural
+  Information Processing Systems (NeurIPS), Vol.~34, 2021, pp. 29541--29552.
+
+\bibitem{xu2023v2v4real}
+R.~Xu, X.~Xia, J.~Li, H.~Li, S.~Zhang, Z.~Tu, Z.~Meng, H.~Xiang, X.~Dong,
+  R.~Song, H.~Yu, B.~Zhou, J.~Ma, {V2V4Real}: A real-world large-scale dataset
+  for vehicle-to-vehicle cooperative perception, in: Proceedings of the
+  IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR), 2023,
+  pp. 13712--13722.
+
+\bibitem{yu2023v2xseq}
+H.~Yu, W.~Yang, H.~Ruan, Z.~Yang, Y.~Tang, X.~Gao, X.~Hao, Y.~Shi, Y.~Pan,
+  N.~Sun, J.~Song, J.~Yuan, P.~Luo, Z.~Nie, {V2X-Seq}: A large-scale sequential
+  dataset for vehicle-infrastructure cooperative perception and forecasting,
+  in: Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern
+  Recognition (CVPR), 2023, pp. 5486--5495.
+
+\bibitem{zimmer2024tumtraf}
+W.~Zimmer, G.~A. Wardana, S.~Sritharan, X.~Zhou, R.~Song, A.~C. Knoll,
+  {TUMTraf} {V2X} cooperative perception dataset, in: Proceedings of the
+  IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR), 2024,
+  pp. 22668--22677.
+
+\bibitem{liu2020who2com}
+Y.-C. Liu, J.~Tian, C.-Y. Ma, N.~Glaser, C.-W. Kuo, Z.~Kira, {Who2com}:
+  Collaborative perception via learnable handshake communication, in:
+  Proceedings of the IEEE International Conference on Robotics and Automation
+  (ICRA), 2020, pp. 6876--6883.
+
+\bibitem{liu2020when2com}
+Y.-C. Liu, J.~Tian, N.~Glaser, Z.~Kira, {When2com}: Multi-agent perception via
+  communication graph grouping, in: Proceedings of the IEEE/CVF Conference on
+  Computer Vision and Pattern Recognition (CVPR), 2020, pp. 4106--4115.
+
+\bibitem{hu2022where2comm}
+Y.~Hu, S.~Fang, Z.~Lei, Y.~Zhong, S.~Chen, {Where2comm}:
+  Communication-efficient collaborative perception via spatial confidence maps,
+  in: Advances in Neural Information Processing Systems (NeurIPS), Vol.~35,
+  2022, pp. 4874--4886.
+
+\bibitem{wang2023umc}
+T.~Wang, G.~Chen, K.~Chen, Z.~Liu, B.~Zhang, A.~Knoll, C.~Jiang, {UMC}: A
+  unified bandwidth-efficient and multi-resolution based collaborative
+  perception framework, in: Proceedings of the IEEE/CVF International
+  Conference on Computer Vision (ICCV), 2023, pp. 8187--8196.
+
+\bibitem{yang2023how2comm}
+D.~Yang, K.~Yang, Y.~Wang, J.~Liu, Z.~Xu, R.~Yin, P.~Zhai, L.~Zhang,
+  {How2comm}: Communication-efficient and collaboration-pragmatic multi-agent
+  perception, in: Advances in Neural Information Processing Systems (NeurIPS),
+  Vol.~36, 2023, pp. 25151--25164.
+
+\bibitem{liu2024select2col}
+Y.~Liu, Q.~Huang, R.~Li, X.~Chen, Z.~Zhao, S.~Zhao, Y.~Zhu, H.~Zhang,
+  {Select2Col}: Leveraging spatial-temporal importance of semantic information
+  for efficient collaborative perception, IEEE Transactions on Vehicular
+  Technology 73~(11) (2024) 17173--17187.
+
+\bibitem{wang2026longscope}
+J.~Wang, Z.~Xu, Y.~Zhang, Z.~Jiang, C.~Lu, S.~Yang, Y.~Wang, J.~Zhong,
+  C.~Zhang, S.~Xu, J.~Wang, {Long-SCOPE}: Fully sparse long-range cooperative
+  {3D} perception, in: Proceedings of the IEEE/CVF Conference on Computer
+  Vision and Pattern Recognition (CVPR), 2026.
+
+\bibitem{lu2023coalign}
+Y.~Lu, Q.~Li, B.~Liu, M.~Dianati, C.~Feng, S.~Chen, Y.~Wang, Robust
+  collaborative {3D} object detection in presence of pose errors, in:
+  Proceedings of the IEEE International Conference on Robotics and Automation
+  (ICRA), 2023, pp. 4812--4818.
+
+\bibitem{lei2022syncnet}
+Z.~Lei, S.~Ren, Y.~Hu, W.~Zhang, S.~Chen, Latency-aware collaborative
+  perception, in: Proceedings of the European Conference on Computer Vision
+  (ECCV), 2022, pp. 316--332.
+
+\bibitem{lu2024heal}
+Y.~Lu, Y.~Hu, Y.~Zhong, D.~Wang, Y.~Wang, S.~Chen, {HEAL}: An extensible
+  framework for open heterogeneous collaborative perception, in: Proceedings of
+  the International Conference on Learning Representations (ICLR), 2024.
+
+\bibitem{hu2023coca3d}
+Y.~Hu, Y.~Lu, R.~Xu, W.~Xie, S.~Chen, Y.~Wang, Collaboration helps camera
+  overtake {LiDAR} in {3D} detection, in: Proceedings of the IEEE/CVF
+  Conference on Computer Vision and Pattern Recognition (CVPR), 2023, pp.
+  9243--9252.
+
+\bibitem{cao2022monoscene}
+A.-Q. Cao, R.~de~Charette, {MonoScene}: Monocular {3D} semantic scene
+  completion, in: Proceedings of the IEEE/CVF Conference on Computer Vision and
+  Pattern Recognition (CVPR), 2022, pp. 3991--4001.
+
+\bibitem{huang2023tpvformer}
+Y.~Huang, W.~Zheng, Y.~Zhang, J.~Zhou, J.~Lu, Tri-perspective view for
+  vision-based {3D} semantic occupancy prediction, in: Proceedings of the
+  IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR), 2023,
+  pp. 9223--9232.
+
+\bibitem{li2023voxformer}
+Y.~Li, Z.~Yu, C.~Choy, C.~Xiao, J.~M. Alvarez, S.~Fidler, C.~Feng,
+  A.~Anandkumar, {VoxFormer}: Sparse voxel transformer for camera-based {3D}
+  semantic scene completion, in: Proceedings of the IEEE/CVF Conference on
+  Computer Vision and Pattern Recognition (CVPR), 2023, pp. 9087--9098.
+
+\bibitem{wei2023surroundocc}
+Y.~Wei, L.~Zhao, W.~Zheng, Z.~Zhu, J.~Zhou, J.~Lu, {SurroundOcc}: Multi-camera
+  {3D} occupancy prediction for autonomous driving, in: Proceedings of the
+  IEEE/CVF International Conference on Computer Vision (ICCV), 2023, pp.
+  21729--21740.
+
+\bibitem{tian2023occ3d}
+X.~Tian, T.~Jiang, L.~Yun, Y.~Mao, H.~Yang, Y.~Wang, Y.~Wang, H.~Zhao, {Occ3D}:
+  A large-scale {3D} occupancy prediction benchmark for autonomous driving, in:
+  Advances in Neural Information Processing Systems (NeurIPS), Vol.~36, 2023,
+  pp. 64318--64330.
+
+\bibitem{liu2024sparseocc}
+H.~Liu, H.~Wang, Y.~Chen, Z.~Yang, J.~Zeng, L.~Chen, L.~Wang, Fully sparse {3D}
+  occupancy prediction, in: Proceedings of the European Conference on Computer
+  Vision (ECCV), 2024, pp. 54--71.
+
+\bibitem{huang2024gaussianformer}
+Y.~Huang, W.~Zheng, Y.~Zhang, J.~Zhou, J.~Lu, {GaussianFormer}: Scene as
+  {Gaussians} for vision-based {3D} semantic occupancy prediction, in:
+  Proceedings of the European Conference on Computer Vision (ECCV), 2024, pp.
+  376--393.
+
+\bibitem{lang2019pointpillars}
+A.~H. Lang, S.~Vora, H.~Caesar, L.~Zhou, J.~Yang, O.~Beijbom, {PointPillars}:
+  Fast encoders for object detection from point clouds, in: Proceedings of the
+  IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR), 2019,
+  pp. 12697--12705.
+
+\bibitem{ronneberger2015unet}
+O.~Ronneberger, P.~Fischer, T.~Brox, {U-Net}: Convolutional networks for
+  biomedical image segmentation, in: Medical Image Computing and
+  Computer-Assisted Intervention (MICCAI), 2015, pp. 234--241.
+
+\bibitem{vandenoord2017vqvae}
+A.~van~den Oord, O.~Vinyals, K.~Kavukcuoglu, Neural discrete representation
+  learning, in: Advances in Neural Information Processing Systems (NeurIPS),
+  Vol.~30, 2017, pp. 6306--6315.
+
+\bibitem{zeghidour2021soundstream}
+N.~Zeghidour, A.~Luebs, A.~Omran, J.~Skoglund, M.~Tagliasacchi, {SoundStream}:
+  An end-to-end neural audio codec, IEEE/ACM Transactions on Audio, Speech, and
+  Language Processing 30 (2021) 495--507.
+
+\bibitem{defossez2023encodec}
+A.~D{\'e}fossez, J.~Copet, G.~Synnaeve, Y.~Adi, High fidelity neural audio
+  compression, Transactions on Machine Learning Research (2023).
+
+\bibitem{elfes1989occupancy}
+A.~Elfes, Using occupancy grids for mobile robot perception and navigation,
+  Computer 22~(6) (1989) 46--57.
+
+\bibitem{amanatides1987ray}
+J.~Amanatides, A.~Woo, A fast voxel traversal algorithm for ray tracing, in:
+  Proceedings of Eurographics, Vol.~87, 1987, pp. 3--10.
+
+\bibitem{hornung2013octomap}
+A.~Hornung, K.~M. Wurm, M.~Bennewitz, C.~Stachniss, W.~Burgard, {OctoMap}: An
+  efficient probabilistic {3D} mapping framework based on octrees, Autonomous
+  Robots 34~(3) (2013) 189--206.
+
+\bibitem{park2024lidarweather}
+J.~Park, K.~Kim, H.~Shim, Rethinking data augmentation for robust {LiDAR}
+  semantic segmentation in adverse weather, in: Proceedings of the European
+  Conference on Computer Vision (ECCV), 2024, pp. 385--402.
+
+\bibitem{huang2025v2xr}
+X.~Huang, J.~Wang, Q.~Xia, S.~Chen, B.~Yang, X.~Li, C.~Wang, C.~Wen, {V2X-R}:
+  Cooperative {LiDAR}-{4D} radar fusion with denoising diffusion for {3D}
+  object detection, in: Proceedings of the IEEE/CVF Conference on Computer
+  Vision and Pattern Recognition (CVPR), 2025.
+
+\bibitem{shannon1948entropy}
+C.~E. Shannon, A mathematical theory of communication, Bell System Technical
+  Journal 27~(3) (1948) 379--423.
+
+\bibitem{guo2017calibration}
+C.~Guo, G.~Pleiss, Y.~Sun, K.~Q. Weinberger, On calibration of modern neural
+  networks, in: Proceedings of the International Conference on Machine Learning
+  (ICML), 2017, pp. 1321--1330.
+
+\bibitem{morton1966zorder}
+G.~M. Morton, A computer oriented geodetic data base and a new technique in
+  file sequencing, Tech. rep., IBM Ltd., Ottawa, Canada (1966).
+
+\bibitem{loshchilov2019adamw}
+I.~Loshchilov, F.~Hutter, Decoupled weight decay regularization, in:
+  Proceedings of the International Conference on Learning Representations
+  (ICLR), 2019.
+
+\end{thebibliography}

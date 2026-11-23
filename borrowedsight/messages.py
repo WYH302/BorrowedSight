@@ -7,10 +7,28 @@ import torch
 
 from borrowedsight.codec import decode_tokens, demorton3, encode_tokens
 from borrowedsight.grid import GRID_SIZE, linear_index, transform_points_torch, voxel_centers_torch, voxel_index_torch
-from borrowedsight.labels import ROAD, THINGS, VERTICAL
+from borrowedsight.labels import N_CLASS, ROAD, THINGS, VERTICAL
 from borrowedsight.packer import pack_bytes
 
 GX, GY, GZ = GRID_SIZE
+
+# 0=other_non_road, 1=thing, 2=vertical, 3=road
+_QUOTA_LUT_CPU = torch.zeros(N_CLASS, dtype=torch.int8)
+for _c in THINGS:
+    _QUOTA_LUT_CPU[_c] = 1
+for _c in VERTICAL:
+    _QUOTA_LUT_CPU[_c] = 2
+_QUOTA_LUT_CPU[ROAD] = 3
+_QUOTA_LUT_CACHE: dict[str, torch.Tensor] = {}
+
+
+def _quota_lut(device: torch.device) -> torch.Tensor:
+    key = str(device)
+    cached = _QUOTA_LUT_CACHE.get(key)
+    if cached is None:
+        cached = _QUOTA_LUT_CPU.to(device)
+        _QUOTA_LUT_CACHE[key] = cached
+    return cached
 
 
 def quota_indices(
@@ -21,48 +39,47 @@ def quota_indices(
     thing_floor: float = 0.15,
     vertical_floor: float = 0.15,
 ) -> torch.Tensor:
-    """Hard thing / vertical floors and a road cap. Returns sender-voxel rows."""
+    """Hard thing / vertical floors and a road cap (zero-sync GPU vectorized).
+
+    Returns sender-voxel rows satisfying:
+    1) Up to floor(k * thing_floor) highest-scoring Things tokens;
+    2) Up to floor(k * vertical_floor) highest-scoring Vertical tokens;
+    3) Remaining budget filled by highest-scoring non-Road tokens;
+    4) Any remaining slots filled by Road tokens capped at road / (road + other) <= road_cap.
+    """
     count = int(scores.shape[0])
     if count == 0 or k <= 0:
         return torch.zeros(0, dtype=torch.long, device=scores.device)
-    things = torch.isin(classes, torch.as_tensor(THINGS, device=classes.device))
-    vertical = torch.isin(classes, torch.as_tensor(VERTICAL, device=classes.device))
-    road = classes == ROAD
-    keep = torch.zeros(count, dtype=torch.bool, device=scores.device)
+    k_int = int(k)
+    order = torch.argsort(scores, descending=True)
+    cls_sorted = classes[order].clamp(0, N_CLASS - 1)
+    g = _quota_lut(scores.device)[cls_sorted]
 
-    def take(mask: torch.Tensor, limit: int) -> None:
-        if limit <= 0:
-            return
-        free = torch.logical_and(mask, torch.logical_not(keep))
-        idx = torch.nonzero(free, as_tuple=False).flatten()
-        if idx.numel() == 0:
-            return
-        n_take = min(int(limit), int(idx.numel()))
-        chosen = idx[torch.topk(scores[idx], n_take).indices]
-        keep[chosen] = True
+    t_lim = int(k_int * thing_floor)
+    v_lim = int(k_int * vertical_floor)
 
-    take(things, int(k * thing_floor))
-    take(vertical, int(k * vertical_floor))
-    non_road = torch.logical_not(road)
-    take(non_road, k - int(keep.sum().item()))
-    slots = k - int(keep.sum().item())
-    take(road, slots)
-    chosen = torch.nonzero(keep, as_tuple=False).flatten()
-    if chosen.numel() > 0:
-        road_sel = road[chosen]
-        n_other = int(torch.logical_not(road_sel).sum().item())
-        # road / (road + other) <= cap  =>  road <= other * cap / (1 - cap)
-        cap = float(road_cap)
-        max_road = int(n_other * cap / max(1e-6, 1.0 - cap))
-        road_idx = chosen[road_sel]
-        if int(road_idx.numel()) > max_road:
-            if max_road <= 0:
-                keep[road_idx] = False
-            else:
-                best = road_idx[torch.topk(scores[road_idx], max_road).indices]
-                keep[road_idx] = False
-                keep[best] = True
-    return torch.nonzero(keep, as_tuple=False).flatten()
+    is_t = g == 1
+    keep_t = is_t & (torch.cumsum(is_t, dim=0) <= t_lim) if t_lim > 0 else torch.zeros_like(is_t)
+    is_v = g == 2
+    keep_v = is_v & (torch.cumsum(is_v, dim=0) <= v_lim) if v_lim > 0 else torch.zeros_like(is_v)
+
+    floor_keep = keep_t | keep_v
+    rem_nr = (g != 3) & (~floor_keep)
+    nr_slots = (k_int - floor_keep.sum()).clamp(min=0)
+    extra_nr = rem_nr & (torch.cumsum(rem_nr, dim=0) <= nr_slots)
+
+    nr_keep = floor_keep | extra_nr
+    n_other = nr_keep.sum()
+    slots = (k_int - n_other).clamp(min=0)
+    cap = float(road_cap)
+    cap_ratio = cap / max(1e-6, 1.0 - cap)
+    max_road = torch.floor(n_other.to(torch.float64) * cap_ratio).to(torch.long)
+    road_limit = torch.minimum(slots, max_road)
+
+    is_r = g == 3
+    road_keep = is_r & (torch.cumsum(is_r, dim=0) <= road_limit)
+    keep_sorted = nr_keep | road_keep
+    return order[keep_sorted]
 
 
 def topk_indices(scores: torch.Tensor, k: int) -> torch.Tensor:
@@ -105,6 +122,7 @@ def encode_packet(
     stage: int = 1,
     pad_slots: int | None = None,
     tail_bytes: int = 0,
+    include_envelope: bool | None = None,
 ) -> bytes:
     tokens = encode_tokens(method, coords, payload, stage=stage)
     order = np.argsort(decode_sort_key(tokens), kind="mergesort") if tokens.shape[0] else np.zeros(0, dtype=np.int64)
@@ -122,6 +140,7 @@ def encode_packet(
         stage=stage,
         pad_slots=pad_slots,
         tail_bytes=tail_bytes,
+        include_envelope=include_envelope,
     )
 
 
