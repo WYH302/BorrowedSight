@@ -29,30 +29,32 @@ from borrowedsight.paths import CHECKPOINTS, DATA_ROOT
 
 OUT = Path(__file__).resolve().parent
 
-REAL_P4 = ROOT / "outputs" / "real_opv2v" / "phase4_gate3" / "results.csv"
-REAL_P5 = ROOT / "outputs" / "real_opv2v" / "phase5" / "measurements.csv"
+REAL_P4 = ROOT / "outputs" / "real_opv2v" / "v21_full" / "results.csv"
+REAL_P5 = ROOT / "outputs" / "real_opv2v" / "v21_phase5" / "measurements.csv"
+REAL_QUAL_NPZ = ROOT / "outputs" / "real_opv2v" / "v21_phase5" / "qualitative_v21_5cav.npz"
 MINI_P5 = ROOT / "outputs" / "phase5" / "measurements.csv"
 REAL_CACHE_ROOT = DATA_ROOT / "cache"
-REAL_CKPT_DIR = CHECKPOINTS / "real_opv2v"
+REAL_CKPT_DIR = CHECKPOINTS / "real_opv2v_v2"
 
 PALETTE = {
     "B0": "#2D3748",
     "B1": "#4A90D9",
     "B2": "#2A9D8F",
     "B3": "#1D4E89",
-    "B4": "#C85A17",
-    "B4-Env25": "#8B2635",
-    "B4_multibw": "#7B3F8C",
-    "B4_env25_multibw": "#0B7285",
+    "B4-TDVF": "#8B2635",
+    "B4-Compact": "#C85A17",
+    "B4-MultiBW": "#0B7285",
 }
 
 SERIES = {
-    "B1": {"color": "#4A90D9", "ls": ":", "marker": "^", "label": "B1 (Sparse FP16)"},
-    "B2": {"color": "#2A9D8F", "ls": "-.", "marker": "d", "label": "B2 (Cont. 8-d)"},
+    "B1_v2_32k": {"color": "#4A90D9", "ls": ":", "marker": "^", "label": "B1 (Sparse FP16)"},
+    "B2_v2_32k": {"color": "#2A9D8F", "ls": "-.", "marker": "d", "label": "B2 (Cont. 8-d)"},
+    "B3_v2_32k": {"color": "#1D4E89", "ls": "-", "marker": "o", "label": "B3 (Compact 4B VQ)"},
+    "B4_v21_32k": {"color": "#8B2635", "ls": "-", "marker": "P", "label": "B4-TDVF (5B + 50×50)"},
+    "B4_v21_32k_no_env": {"color": "#C85A17", "ls": "--", "marker": "s", "label": "B4-Compact (5B)"},
+    "B4_v21_multibw": {"color": "#0B7285", "ls": "-", "marker": "*", "label": "B4-TDVF-MultiBW"},
     "B3": {"color": "#1D4E89", "ls": "-", "marker": "o", "label": "B3 (Shared VQ)"},
-    "B4": {"color": "#C85A17", "ls": "--", "marker": "s", "label": "B4 (20×20 Env.)"},
-    "B4_env25": {"color": "#8B2635", "ls": "-", "marker": "P", "label": "B4-Env25 (25×25)"},
-    "B4_env25_multibw": {"color": "#0B7285", "ls": "-", "marker": "*", "label": "B4-Env25-MultiBW"},
+    "B4": {"color": "#C85A17", "ls": "--", "marker": "s", "label": "B4 (BorrowedSight)"},
 }
 
 
@@ -63,6 +65,11 @@ def apply_pub_style() -> None:
             "font.serif": ["Times New Roman", "Times", "DejaVu Serif"],
             "mathtext.fontset": "stix",
             "font.size": 9.0,
+            "text.color": "#000000",
+            "axes.labelcolor": "#000000",
+            "axes.edgecolor": "#000000",
+            "xtick.color": "#000000",
+            "ytick.color": "#000000",
             "axes.labelsize": 8.8,
             "axes.titlesize": 9.2,
             "xtick.labelsize": 7.8,
@@ -272,7 +279,7 @@ def draw_fig2_real_oracle() -> None:
     axes[2].set_xticks(senders)
     axes[2].set_xlabel("Active neighbor senders")
     axes[2].set_ylabel("3D vehicle box recall (solid/dash)")
-    ax2_r.set_ylabel("Coverage (dotted)", color="#4A5568")
+    ax2_r.set_ylabel("Coverage (dotted)", color="#000000")
     axes[2].set_ylim(0.65, 1.04)
     ax2_r.set_ylim(0.25, 0.70)
     axes[2].legend(frameon=False, loc="lower right")
@@ -288,28 +295,31 @@ def draw_fig3_main_comparison() -> None:
     p4 = read_csv(REAL_P4)
 
     def agg_test(tag: str, mkey: str) -> tuple[float, float]:
-        vals = [float(r[mkey]) for r in p4 if r["tag"] == tag and r["split"] == "test"]
+        vals = [float(r[mkey]) for r in p4 if r["tag"] == tag]
         return float(np.mean(vals)), (float(np.std(vals, ddof=1)) if len(vals) > 1 else 0.0)
 
-    tags_32 = ["B0", "B1", "B2", "B3", "B4", "B4_env25"]
-    tags_16 = ["B0", "B1_16k", "B2_16k", "B3_16k", "B4_16k", "B4_16k_env25"]
-    labels = ["B0", "B1", "B2", "B3", "B4", "B4-Env25"]
-    hatches = ["", "//", "\\\\", "xx", "..", "++"]
-    colors = [PALETTE[k] for k in labels]
+    tags_32 = ["B0_v2", "B1_v2_32k", "B2_v2_32k", "B3_v2_32k", "B4_v21_32k", "B4_v21_32k_no_env"]
+    labels_32 = ["B0", "B1", "B2", "B3", "B4-TDVF", "B4-Compact"]
+    xtick_32 = ["B0", "B1", "B2", "B3", "B4-\nTDVF", "B4-\nCompact"]
+    tags_16 = ["B0_v2", "B1_v2_16k", "B2_v2_16k", "B3_v2_16k", "B4_v21_16k"]
+    labels_16 = ["B0", "B1", "B2", "B3", "B4-TDVF"]
+    xtick_16 = ["B0", "B1", "B2", "B3", "B4-\nTDVF"]
+    hatches_all = ["", "//", "\\\\", "xx", "++", ".."]
 
-    fig, axes = plt.subplots(2, 3, figsize=(9.6, 5.2), constrained_layout=True)
+    fig, axes = plt.subplots(2, 3, figsize=(9.6, 5.3), constrained_layout=True)
     metrics = [
-        ("mIoU", "mIoU $\\uparrow$"),
-        ("vehicle_IoU", "Vehicle IoU $\\uparrow$"),
-        ("unobserved_as_free_err", "UFE $\\downarrow$"),
+        ("test_mIoU", "mIoU $\\uparrow$"),
+        ("test_veh", "Vehicle IoU $\\uparrow$"),
+        ("test_UFE", "UFE $\\downarrow$"),
     ]
     sub_letters = [
         ["(a) Real OPV2V Test (32 KB): mIoU", "(b) Real OPV2V Test (32 KB): Vehicle IoU", "(c) Real OPV2V Test (32 KB): UFE"],
         ["(d) Real OPV2V Test (16 KB): mIoU", "(e) Real OPV2V Test (16 KB): Vehicle IoU", "(f) Real OPV2V Test (16 KB): UFE"],
     ]
 
-    xs = np.arange(len(labels))
-    for row_i, tlist in enumerate((tags_32, tags_16)):
+    for row_i, (tlist, labels, xticks) in enumerate(((tags_32, labels_32, xtick_32), (tags_16, labels_16, xtick_16))):
+        xs = np.arange(len(labels))
+        colors = [PALETTE[k] for k in labels]
         for col_i, (mkey, ylabel) in enumerate(metrics):
             ax = axes[row_i, col_i]
             means, stds = zip(*(agg_test(t, mkey) for t in tlist))
@@ -318,14 +328,14 @@ def draw_fig3_main_comparison() -> None:
                 ax.bar(
                     i,
                     v,
-                    width=0.66,
+                    width=0.64,
                     color=colors[i],
-                    hatch=hatches[i],
-                    edgecolor="#1A202C",
+                    hatch=hatches_all[i],
+                    edgecolor="#000000",
                     linewidth=0.55,
                     yerr=(sd if sd > 0 else None),
                     capsize=(2.5 if sd > 0 else 0),
-                    error_kw={"elinewidth": 0.9, "ecolor": "#1A202C"},
+                    error_kw={"elinewidth": 0.9, "ecolor": "#000000"},
                 )
                 ax.text(
                     i,
@@ -333,16 +343,18 @@ def draw_fig3_main_comparison() -> None:
                     f"{v:.3f}",
                     ha="center",
                     va="bottom",
-                    fontsize=6.9,
-                    fontweight=("bold" if i in (4, 5) else "normal"),
+                    fontsize=6.8,
+                    fontweight=("bold" if i >= 4 else "normal"),
                 )
             if col_i == 0:
-                ax.axhline(0.3416, color="#718096", ls="--", lw=0.9, alpha=0.8)
-                ax.text(-0.42, 0.3416 + vmax * 0.025, "CoHFF (4-cam): 0.342", fontsize=6.1, color="#4A5568", ha="left")
+                ax.axhline(0.3416, color="#4A5568", ls="--", lw=0.9, alpha=0.85)
+                ax.text(-0.42, 0.3416 + vmax * 0.022, "CoHFF (4-cam): 0.342", fontsize=6.0, color="#000000", ha="left")
+                ax.axhline(0.4154, color="#8B2635", ls=":", lw=0.9, alpha=0.85)
+                ax.text(-0.42, 0.4154 + vmax * 0.022, "VQSOP (4-cam): 0.415", fontsize=6.0, color="#000000", ha="left")
             ax.set_xticks(xs)
-            ax.set_xticklabels(labels, fontsize=7.4)
+            ax.set_xticklabels(xticks, fontsize=7.0)
             ax.set_ylabel(ylabel)
-            ax.set_ylim(0, vmax * 1.22)
+            ax.set_ylim(0, vmax * 1.24)
             set_bold_subcaption(ax, sub_letters[row_i][col_i])
 
     save_both(fig, "fig3_main_comparison")
@@ -365,7 +377,7 @@ def draw_fig4_bandwidth() -> None:
     real_bws = ["2048", "4096", "8192", "16384", "24576", "32768"]
     real_x = np.arange(len(real_bws))
     real_xl = ["2K", "4K", "8K", "16K", "24K", "32K"]
-    real_models = ("B1", "B2", "B3", "B4", "B4_env25", "B4_env25_multibw")
+    real_models = ("B1_v2_32k", "B2_v2_32k", "B3_v2_32k", "B4_v21_32k", "B4_v21_multibw")
     for col_i, (mkey, ylabel) in enumerate(metrics):
         ax = axes[0, col_i]
         for m in real_models:
@@ -382,8 +394,8 @@ def draw_fig4_bandwidth() -> None:
                 label=st["label"],
             )
         if col_i == 0:
-            ax.axhline(0.3416, color="#718096", ls=":", lw=1.0)
-            ax.text(-0.18, 0.354, "CoHFF (4-cam): 0.342", fontsize=6.3, color="#4A5568", ha="left")
+            ax.axhline(0.3416, color="#4A5568", ls=":", lw=1.0)
+            ax.text(-0.18, 0.352, "CoHFF (4-cam): 0.342", fontsize=6.2, color="#000000", ha="left")
         ax.set_xticks(real_x)
         ax.set_xticklabels(real_xl)
         ax.set_xlabel("Serialized packet budget (bytes)")
@@ -403,10 +415,12 @@ def draw_fig4_bandwidth() -> None:
         ax.set_xticklabels(mini_xl)
         ax.set_xlabel("Serialized packet budget (bytes)")
         ax.set_ylabel(ylabel)
+        if col_i == 0:
+            ax.legend(frameon=False, loc="upper left", fontsize=6.8)
         set_bold_subcaption(ax, titles[1][col_i])
 
     handles, labels = axes[0, 0].get_legend_handles_labels()
-    fig.legend(handles, labels, loc="upper center", ncol=3, frameon=False, bbox_to_anchor=(0.5, 1.07))
+    fig.legend(handles, labels, loc="upper center", ncol=5, frameon=False, bbox_to_anchor=(0.5, 1.05), fontsize=7.2)
     save_both(fig, "fig4_bandwidth_efficiency")
 
 
@@ -423,79 +437,77 @@ def draw_fig5_robustness() -> None:
     wx = np.arange(len(weathers))
     w = 0.20
     w_bars = [
-        ("B3", "B3", "#1D4E89"),
-        ("B4", "B4", "#C85A17"),
-        ("B4_env25", "B4-Env25", "#8B2635"),
-        ("B4_multibw", "B4-MultiBW", "#0B7285"),
+        ("B3_v2_32k", "B3 (4B)", "#1D4E89"),
+        ("B4_v21_32k", "B4-TDVF", "#8B2635"),
+        ("B4_v21_32k_no_env", "B4-Compact", "#C85A17"),
+        ("B4_v21_multibw", "B4-MultiBW", "#0B7285"),
     ]
     for bi, (tag, lbl, col) in enumerate(w_bars):
         offset = (bi - 1.5) * w
         vals = [float(next(r for r in p5 if r["family"] == "weather" and r["model_name"] == tag and r["level"] == lv)["mIoU"]) for lv in weathers]
-        ax.bar(wx + offset, vals, width=w * 0.92, color=col, edgecolor="#1A202C", linewidth=0.45, label=lbl)
+        ax.bar(wx + offset, vals, width=w * 0.92, color=col, edgecolor="#000000", linewidth=0.45, label=lbl)
     ax.set_xticks(wx)
     ax.set_xticklabels(["Clear", "LISA Fog", "LISA Rain"])
     ax.set_ylabel("mIoU $\\uparrow$")
-    ax.set_ylim(0, 0.48)
-    ax.legend(frameon=False, loc="upper right", ncol=2, fontsize=6.7)
+    ax.set_ylim(0, 0.50)
+    ax.legend(frameon=False, loc="upper right", ncol=2, fontsize=6.5)
     set_bold_subcaption(ax, "(a) LISA Physical Weather")
 
     # (b) Independent Micro-Block Packet Loss (0-50%)
     ax = axes[0, 1]
     drops = ["0.0", "0.1", "0.25", "0.5"]
     dx = np.array([0, 10, 25, 50])
-    for m in ("B3", "B4", "B4_env25"):
+    for m in ("B3_v2_32k", "B4_v21_32k", "B4_v21_32k_no_env", "B4_v21_multibw"):
         pts = [next(r for r in p5 if r["family"] == "packet_loss" and r["model_name"] == m and r["level"] == d) for d in drops]
         st = SERIES[m]
-        ax.plot(dx, [float(r["mIoU"]) for r in pts], color=st["color"], ls=st["ls"], marker=st["marker"], lw=1.6, ms=4.5, label=st["label"])
+        ax.plot(dx, [float(r["mIoU"]) for r in pts], color=st["color"], ls=st["ls"], marker=st["marker"], lw=1.55, ms=4.5, label=st["label"])
     ax.set_xticks(dx)
     ax.set_xticklabels(["0%", "10%", "25%", "50%"])
     ax.set_xlabel("Micro-block drop rate")
     ax.set_ylabel("mIoU $\\uparrow$")
-    ax.legend(frameon=False, loc="lower left", fontsize=7.0)
+    ax.legend(frameon=False, loc="lower left", fontsize=6.5)
     set_bold_subcaption(ax, "(b) Independent Block Drop")
 
     # (c) Latency & Pose Noise
     ax = axes[0, 2]
     delays = ["0", "1", "2", "5"]
     tx = np.array([0, 100, 200, 500])
-    for m in ("B3", "B4", "B4_env25"):
+    short_map = {"B3_v2_32k": "B3", "B4_v21_32k": "B4-TDVF", "B4_v21_32k_no_env": "B4-Compact"}
+    for m in ("B3_v2_32k", "B4_v21_32k", "B4_v21_32k_no_env"):
         pts = [next(r for r in p5 if r["family"] == "latency" and r["model_name"] == m and r["level"] == d) for d in delays]
         st = SERIES[m]
-        short = m.replace("_env25", "-Env25")
-        ax.plot(tx, [float(r["mIoU"]) for r in pts], color=st["color"], ls=st["ls"], marker=st["marker"], lw=1.5, ms=4.4, label=f"{short} (Delay)")
+        ax.plot(tx, [float(r["mIoU"]) for r in pts], color=st["color"], ls=st["ls"], marker=st["marker"], lw=1.5, ms=4.4, label=f"{short_map[m]} (Delay)")
     pose_levels = ["0.0_0.0", "0.5_2.0", "1.0_5.0"]
     px = np.array([0, 200, 500])
-    for m, mk in (("B3", "^"), ("B4_env25", "d")):
+    for m, mk in (("B3_v2_32k", "^"), ("B4_v21_32k", "d")):
         pts = [next(r for r in p5 if r["family"] == "pose" and r["model_name"] == m and r["level"] == pl) for pl in pose_levels]
-        short = m.replace("_env25", "-Env25")
-        ax.plot(px, [float(r["mIoU"]) for r in pts], color=SERIES[m]["color"], ls=":", marker=mk, lw=1.25, ms=4.2, alpha=0.85, label=f"{short} (Pose)")
+        ax.plot(px, [float(r["mIoU"]) for r in pts], color=SERIES[m]["color"], ls=":", marker=mk, lw=1.25, ms=4.2, alpha=0.85, label=f"{short_map[m]} (Pose)")
     ax.set_xticks([0, 100, 200, 500])
     ax.set_xticklabels(["0ms\n(0m/0°)", "100ms", "200ms\n(0.5m/2°)", "500ms\n(1m/5°)"])
     ax.set_xlabel("V2X delay / pose error")
     ax.set_ylabel("mIoU $\\uparrow$")
-    ax.legend(frameon=False, loc="lower left", fontsize=6.4, ncol=1)
+    ax.legend(frameon=False, loc="lower left", fontsize=6.2, ncol=1)
     set_bold_subcaption(ax, "(c) Latency & Localization Error")
 
     # (d) Real Multi-Sender Scaling (1 -> 2 -> 3 senders on test_multi3, n=302)
     ax = axes[1, 0]
     ks = ["1", "2", "3"]
     kx = np.array([1, 2, 3])
-    for m in ("B3", "B4", "B4_env25"):
+    for m in ("B3_v2_32k", "B4_v21_32k"):
         pts = [next(r for r in p5 if r["split"] == "test_multi3" and r["family"] == "senders" and r["model_name"] == m and r["level"] == k) for k in ks]
         st = SERIES[m]
-        short = m.replace("_env25", "-Env25")
-        ax.plot(kx, [float(r["mIoU"]) for r in pts], color=st["color"], ls=st["ls"], marker=st["marker"], lw=1.6, ms=4.8, label=f"{short} mIoU")
+        ax.plot(kx, [float(r["mIoU"]) for r in pts], color=st["color"], ls=st["ls"], marker=st["marker"], lw=1.6, ms=4.8, label=f"{short_map[m]} mIoU")
     ax_r = ax.twinx()
     ax_r.spines["top"].set_visible(False)
     ax_r.grid(False)
-    for m in ("B3", "B4_env25"):
+    for m in ("B3_v2_32k", "B4_v21_32k"):
         pts = [next(r for r in p5 if r["split"] == "test_multi3" and r["family"] == "senders" and r["model_name"] == m and r["level"] == k) for k in ks]
         st = SERIES[m]
-        ax_r.plot(kx, [float(r["vehicle_IoU"]) for r in pts], color=st["color"], ls=":", marker=st["marker"], lw=1.25, ms=3.8, alpha=0.8)
+        ax_r.plot(kx, [float(r["vehicle_IoU"]) for r in pts], color=st["color"], ls=":", marker=st["marker"], lw=1.25, ms=3.8, alpha=0.85)
     ax.set_xticks(kx)
     ax.set_xlabel("Active neighbor senders ($n=302$)")
-    ax.set_ylabel("mIoU $\\uparrow$ (solid/dash)")
-    ax_r.set_ylabel("Vehicle IoU (dotted)", color="#4A5568")
+    ax.set_ylabel("mIoU $\\uparrow$ (solid)")
+    ax_r.set_ylabel("Vehicle IoU (dotted)", color="#000000")
     ax.legend(frameon=False, loc="lower right", fontsize=7.0)
     set_bold_subcaption(ax, "(d) Multi-Sender Scaling (Real Test)")
 
@@ -504,91 +516,43 @@ def draw_fig5_robustness() -> None:
     dens = ["sparse", "medium", "dense"]
     dx2 = np.arange(3)
     w2 = 0.34
-    for offset, tag, col in ((-w2 / 2, "B3", "#1D4E89"), (w2 / 2, "B4", "#C85A17")):
+    for offset, tag, lbl, col in ((-w2 / 2, "B3_v2_32k", "B3 (4B)", "#1D4E89"), (w2 / 2, "B4_v21_32k", "B4-TDVF", "#8B2635")):
         vals = [float(next(r for r in p5 if r["family"] == "density" and r["model_name"] == tag and r["level"] == d)["mIoU"]) for d in dens]
-        ax.bar(dx2 + offset, vals, width=w2 * 0.92, color=col, edgecolor="#1A202C", linewidth=0.5, label=tag)
+        ax.bar(dx2 + offset, vals, width=w2 * 0.92, color=col, edgecolor="#000000", linewidth=0.5, label=lbl)
         for xi, v in zip(dx2 + offset, vals):
             ax.text(xi, v + 0.008, f"{v:.3f}", ha="center", va="bottom", fontsize=6.8)
     ax.set_xticks(dx2)
     ax.set_xticklabels(["Sparse\n($n=297$)", "Medium\n($n=244$)", "Dense\n($n=185$)"])
     ax.set_ylabel("mIoU $\\uparrow$")
-    ax.set_ylim(0, 0.48)
-    ax.legend(frameon=False, loc="upper left", fontsize=7.4)
+    ax.set_ylim(0, 0.49)
+    ax.legend(frameon=False, loc="upper left", fontsize=7.2)
     set_bold_subcaption(ax, "(e) Urban Traffic Congestion")
 
-    # (f) Uncertainty Separation & Degradation Monotonicity (B4)
+    # (f) Uncertainty Separation & Degradation Monotonicity (B4-TDVF)
     ax = axes[1, 2]
-    pts_d = [next(r for r in p5 if r["family"] == "packet_loss" and r["model_name"] == "B4" and r["level"] == d) for d in drops]
+    pts_d = [next(r for r in p5 if r["family"] == "packet_loss" and r["model_name"] == "B4_v21_32k" and r["level"] == d) for d in drops]
     sx = np.arange(4)
     ax.plot(sx, [float(r["uncertainty_on_unknown"]) for r in pts_d], "-s", color="#8B2635", lw=1.6, ms=4.5, label="Risk on Unknown")
     ax.plot(sx, [float(r["mean_uncertainty"]) for r in pts_d], "--o", color="#C85A17", lw=1.6, ms=4.5, label="Mean Risk")
     ax.plot(sx, [float(r["uncertainty_on_observed"]) for r in pts_d], "-.^", color="#2A9D8F", lw=1.5, ms=4.5, label="Risk on Observed")
     ax.set_xticks(sx)
     ax.set_xticklabels(["0%", "10%", "25%", "50%"])
-    ax.set_xlabel("Micro-block drop rate (B4)")
+    ax.set_xlabel("Micro-block drop rate (B4-TDVF)")
     ax.set_ylabel("Epistemic risk score $U$")
-    ax.set_ylim(0.22, 0.62)
-    ax.legend(frameon=False, loc="center left", bbox_to_anchor=(0.02, 0.38), fontsize=6.8)
-    set_bold_subcaption(ax, "(f) Blind-Zone Risk Separation (B4)")
+    ax.set_ylim(0.28, 0.62)
+    ax.legend(frameon=False, loc="center left", bbox_to_anchor=(0.02, 0.45), fontsize=6.8)
+    set_bold_subcaption(ax, "(f) Blind-Zone Risk Separation (B4-TDVF)")
 
     save_both(fig, "fig5_robustness_suite")
 
 
 # ---------------------------------------------------------------------------
-# Figures 6 & 7: Clean 5-CAV Multi-Vehicle Real OPV2V Qualitative Figures
+# Figures 6 & 7: Clean 5-CAV Multi-Vehicle Real OPV2V Qualitative Figures (v2.1)
 # ---------------------------------------------------------------------------
 def draw_real_qualitative_figures() -> None:
-    from borrowedsight.model import BorrowedSight
-    from borrowedsight.packer import packet_layout
-    from tools.eval_phase5_real import _drop_blocks, sem_tri_to_rgb
-    from tools.train_receivers_real import load_cached_split, move_sender
+    from tools.eval_phase5_real import sem_tri_to_rgb
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    test_clear = load_cached_split(REAL_CACHE_ROOT / "opv2v_clear" / "test")
-    test_fog = load_cached_split(REAL_CACHE_ROOT / "opv2v_lisa_fog" / "test")
-    test_rain = load_cached_split(REAL_CACHE_ROOT / "opv2v_lisa_rain" / "test")
-
-    def load_m(tag: str) -> BorrowedSight:
-        blob = torch.load(REAL_CKPT_DIR / f"{tag}_s0.pt", map_location=device, weights_only=False)
-        mkw = dict(blob.get("model_kwargs") or {})
-        cb = int(mkw.pop("codebook_size", 32))
-        m = BorrowedSight(blob["method"], feat_dim=16, codebook_size=cb, **mkw).to(device)
-        m.load_state_dict(blob["model"])
-        m.eval()
-        return m
-
-    def run_one(model: BorrowedSight, fr: dict, target_bytes: int, drop_p: float = 0.0, drop_all: bool = False):
-        bud = packet_layout(model.method, target_bytes, stage=model.default_stage, include_envelope=model.use_envelope)
-        ntok = int(bud["n_tokens"])
-        pose = torch.as_tensor(fr["ego_pose"], dtype=torch.float32, device=device).reshape(1, 6)
-        stamp = torch.tensor([float(fr["timestamp"])], dtype=torch.float32, device=device)
-        motion = torch.as_tensor(fr["motion"], dtype=torch.float32, device=device).reshape(1, 2)
-        rng = np.random.default_rng(7)
-        blobs = []
-        with torch.no_grad():
-            if not drop_all:
-                for row in fr["senders"]:
-                    sent = model.transmit(move_sender(row, device), fr["ego_pose"], fr["receiver_id"], ntok, budget=bud, serialize=True)
-                    b = _drop_blocks(sent["blob"], drop_p, rng)
-                    if b:
-                        blobs.append(b)
-            pred = model(pose, stamp, motion, [blobs])
-            sem = pred["sem"].argmax(dim=1)[0].detach().cpu().numpy()
-            tri = pred["tri"].argmax(dim=1)[0].detach().cpu().numpy()
-        return sem, tri
-
-    # Pick the rich 5-CAV multi-vehicle test scene frame (2021_08_22_07_52_02 #000373)
-    target_idx = next(
-        (i for i, fr in enumerate(test_clear) if fr["scene_name"] == "2021_08_22_07_52_02" and fr["stem"] == "000373"),
-        None,
-    )
-    if target_idx is None:
-        multi = [i for i, fr in enumerate(test_clear) if len(fr["senders"]) >= 3 and fr["n_vehicles"] >= 4]
-        target_idx = multi[len(multi) // 2] if multi else 0
-    fr_c = test_clear[target_idx]
-    fr_f = test_fog[target_idx]
-    fr_r = test_rain[target_idx]
-
+    blob = np.load(REAL_QUAL_NPZ, allow_pickle=False)
     legend_handles = [
         patches.Patch(facecolor=[35 / 255, 35 / 255, 48 / 255], edgecolor="black", lw=0.4, label="Unknown (Blind)"),
         patches.Patch(facecolor=[235 / 255, 240 / 255, 245 / 255], edgecolor="black", lw=0.4, label="Observed Free"),
@@ -600,14 +564,13 @@ def draw_real_qualitative_figures() -> None:
     ]
 
     # Figure 6: 32,768 B Equalized-Byte 5-CAV Qualitative Comparison
-    models_32 = {k: load_m(k) for k in ("B0", "B1", "B3", "B4_env25")}
     fig, axes = plt.subplots(1, 5, figsize=(10.4, 2.55), constrained_layout=True)
     panels6 = [
-        ("(a) Ground Truth", fr_c["gt_semantic"], fr_c["gt_tristate"]),
-        ("(b) B0 (0 B)", *run_one(models_32["B0"], fr_c, 32768)),
-        ("(c) B1 (Sparse FP16)", *run_one(models_32["B1"], fr_c, 32768)),
-        ("(d) B3 (Shared VQ)", *run_one(models_32["B3"], fr_c, 32768)),
-        ("(e) B4-Env25 (Ours)", *run_one(models_32["B4_env25"], fr_c, 32768)),
+        ("(a) Ground Truth", blob["gt_sem"], blob["gt_tri"]),
+        ("(b) B0 (0 B)", blob["b0_sem"], blob["b0_tri"]),
+        ("(c) B1 (Sparse FP16)", blob["b1_sem"], blob["b1_tri"]),
+        ("(d) B3 (Compact 4B VQ)", blob["b3_sem"], blob["b3_tri"]),
+        ("(e) B4-TDVF (Ours)", blob["b4_sem"], blob["b4_tri"]),
     ]
     for ax, (cap, s, t) in zip(axes, panels6):
         ax.imshow(sem_tri_to_rgb(s, t), origin="lower", interpolation="nearest")
@@ -617,19 +580,18 @@ def draw_real_qualitative_figures() -> None:
         for sp in ax.spines.values():
             sp.set_visible(True)
             sp.set_linewidth(0.7)
-        ax.set_xlabel(cap, fontsize=8.6, fontweight="bold", labelpad=5)
+        ax.set_xlabel(cap, fontsize=8.4, fontweight="bold", labelpad=5)
     fig.legend(handles=legend_handles, loc="upper center", ncol=7, frameon=False, bbox_to_anchor=(0.5, 1.08), fontsize=7.5)
     save_both(fig, "fig6_real_qualitative")
 
     # Figure 7: Adverse Weather, 50% Block Drop, and Honest Outage Failure (32,768 B)
-    m_b4 = models_32["B4_env25"]
     fig, axes = plt.subplots(1, 5, figsize=(10.4, 2.55), constrained_layout=True)
     panels7 = [
-        ("(a) B4-Env25 Clear", *run_one(m_b4, fr_c, 32768)),
-        ("(b) LISA Fog", *run_one(m_b4, fr_f, 32768)),
-        ("(c) LISA Rain (Clutter)", *run_one(m_b4, fr_r, 32768)),
-        ("(d) 50% Block Drop", *run_one(m_b4, fr_c, 32768, drop_p=0.50)),
-        ("(e) Link Outage (0 B)", *run_one(m_b4, fr_c, 32768, drop_all=True)),
+        ("(a) B4-TDVF Clear", blob["b4_sem"], blob["b4_tri"]),
+        ("(b) LISA Fog", blob["b4_fog_sem"], blob["b4_fog_tri"]),
+        ("(c) LISA Rain (Clutter)", blob["b4_rain_sem"], blob["b4_rain_tri"]),
+        ("(d) 50% Block Drop", blob["b4_drop50_sem"], blob["b4_drop50_tri"]),
+        ("(e) Link Outage (0 B)", blob["b4_outage_sem"], blob["b4_outage_tri"]),
     ]
     for ax, (cap, s, t) in zip(axes, panels7):
         ax.imshow(sem_tri_to_rgb(s, t), origin="lower", interpolation="nearest")
@@ -639,7 +601,7 @@ def draw_real_qualitative_figures() -> None:
         for sp in ax.spines.values():
             sp.set_visible(True)
             sp.set_linewidth(0.7)
-        ax.set_xlabel(cap, fontsize=8.6, fontweight="bold", labelpad=5)
+        ax.set_xlabel(cap, fontsize=8.4, fontweight="bold", labelpad=5)
     fig.legend(handles=legend_handles, loc="upper center", ncol=7, frameon=False, bbox_to_anchor=(0.5, 1.08), fontsize=7.5)
     save_both(fig, "fig7_weather_failure_qualitative")
 
@@ -647,13 +609,15 @@ def draw_real_qualitative_figures() -> None:
 def main() -> None:
     apply_pub_style()
     OUT.mkdir(parents=True, exist_ok=True)
-    draw_fig1_architecture()
+    # Preserve curated vector fig1_architecture.pdf/.png if already exported from Paper2SVG-Pro
+    if "--regen-fig1" in sys.argv:
+        draw_fig1_architecture()
     draw_fig2_real_oracle()
     draw_fig3_main_comparison()
     draw_fig4_bandwidth()
     draw_fig5_robustness()
     draw_real_qualitative_figures()
-    print("GENERATED ALL 7 FULL-SCALE PUBLICATION FIGURES IN", OUT)
+    print("GENERATED FULL-SCALE PUBLICATION FIGURES IN", OUT)
 
 
 if __name__ == "__main__":

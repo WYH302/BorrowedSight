@@ -38,15 +38,9 @@ def quota_indices(
     road_cap: float = 0.45,
     thing_floor: float = 0.15,
     vertical_floor: float = 0.15,
+    road_floor: float = 0.0,
 ) -> torch.Tensor:
-    """Hard thing / vertical floors and a road cap (zero-sync GPU vectorized).
-
-    Returns sender-voxel rows satisfying:
-    1) Up to floor(k * thing_floor) highest-scoring Things tokens;
-    2) Up to floor(k * vertical_floor) highest-scoring Vertical tokens;
-    3) Remaining budget filled by highest-scoring non-Road tokens;
-    4) Any remaining slots filled by Road tokens capped at road / (road + other) <= road_cap.
-    """
+    """Hard thing / vertical (and optional road) floors plus a road cap (zero-sync GPU vectorized)."""
     count = int(scores.shape[0])
     if count == 0 or k <= 0:
         return torch.zeros(0, dtype=torch.long, device=scores.device)
@@ -57,26 +51,28 @@ def quota_indices(
 
     t_lim = int(k_int * thing_floor)
     v_lim = int(k_int * vertical_floor)
+    r_flim = int(k_int * road_floor)
 
     is_t = g == 1
     keep_t = is_t & (torch.cumsum(is_t, dim=0) <= t_lim) if t_lim > 0 else torch.zeros_like(is_t)
     is_v = g == 2
     keep_v = is_v & (torch.cumsum(is_v, dim=0) <= v_lim) if v_lim > 0 else torch.zeros_like(is_v)
+    is_r = g == 3
+    keep_rf = is_r & (torch.cumsum(is_r, dim=0) <= r_flim) if r_flim > 0 else torch.zeros_like(is_r)
 
-    floor_keep = keep_t | keep_v
-    rem_nr = (g != 3) & (~floor_keep)
-    nr_slots = (k_int - floor_keep.sum()).clamp(min=0)
+    floor_nr = keep_t | keep_v
+    rem_nr = (g != 3) & (~floor_nr)
+    nr_slots = (k_int - (floor_nr | keep_rf).sum()).clamp(min=0)
     extra_nr = rem_nr & (torch.cumsum(rem_nr, dim=0) <= nr_slots)
 
-    nr_keep = floor_keep | extra_nr
+    nr_keep = floor_nr | extra_nr
     n_other = nr_keep.sum()
     slots = (k_int - n_other).clamp(min=0)
     cap = float(road_cap)
     cap_ratio = cap / max(1e-6, 1.0 - cap)
     max_road = torch.floor(n_other.to(torch.float64) * cap_ratio).to(torch.long)
-    road_limit = torch.minimum(slots, max_road)
+    road_limit = torch.minimum(slots, torch.maximum(max_road, keep_rf.sum()))
 
-    is_r = g == 3
     road_keep = is_r & (torch.cumsum(is_r, dim=0) <= road_limit)
     keep_sorted = nr_keep | road_keep
     return order[keep_sorted]
@@ -123,9 +119,15 @@ def encode_packet(
     pad_slots: int | None = None,
     tail_bytes: int = 0,
     include_envelope: bool | None = None,
+    compact: bool = False,
 ) -> bytes:
-    tokens = encode_tokens(method, coords, payload, stage=stage)
-    order = np.argsort(decode_sort_key(tokens), kind="mergesort") if tokens.shape[0] else np.zeros(0, dtype=np.int64)
+    use_compact = bool(compact and method in {"B3", "B4"})
+    tokens = encode_tokens(method, coords, payload, stage=stage, compact=use_compact)
+    order = (
+        np.argsort(decode_sort_key(tokens, compact=use_compact), kind="mergesort")
+        if tokens.shape[0]
+        else np.zeros(0, dtype=np.int64)
+    )
     tokens = tokens[order]
     return pack_bytes(
         method,
@@ -141,15 +143,16 @@ def encode_packet(
         pad_slots=pad_slots,
         tail_bytes=tail_bytes,
         include_envelope=include_envelope,
+        compact=use_compact,
     )
 
 
-def decode_sort_key(tokens: np.ndarray) -> np.ndarray:
+def decode_sort_key(tokens: np.ndarray, compact: bool = False) -> np.ndarray:
     from borrowedsight.codec import _read_morton
 
     if tokens.shape[0] == 0:
         return np.zeros(0, dtype=np.uint32)
-    return _read_morton(tokens)
+    return _read_morton(tokens, compact=compact)
 
 
 def packet_coords(tokens_morton: np.ndarray) -> np.ndarray:

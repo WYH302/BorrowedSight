@@ -29,8 +29,11 @@ PAD_BYTE = 0xA5
 COARSE = 20
 
 TOKEN_BYTES = {"B1": 36, "B2": 20, "B3": 8, "B4": 8}
+COMPACT_TOKEN_BYTES = {"B1": 36, "B2": 20, "B3": 4, "B4": 5}
 METHOD_ID = {"B0": 0, "B1": 1, "B2": 2, "B3": 3, "B4": 4}
 ID_METHOD = {value: key for key, value in METHOD_ID.items()}
+FLAG_ENVELOPE = 1
+FLAG_COMPACT = 2
 
 _LE = chr(60)
 _HEADER = struct.Struct(_LE + "4sBBHHIHBBBB6fffH10s")
@@ -39,6 +42,7 @@ _U16B = struct.Struct(_LE + "HB")
 _U16 = struct.Struct(_LE + "H")
 _U32 = struct.Struct(_LE + "I")
 _COMPRESSOR = zstandard.ZstdCompressor(level=3)
+_COMPRESSOR_HIGH = zstandard.ZstdCompressor(level=9)
 _DECOMPRESSOR = zstandard.ZstdDecompressor()
 
 _MORTON_X = np.zeros(128, dtype=np.uint32)
@@ -71,9 +75,15 @@ def morton3(x, y, z) -> np.ndarray:
     return (_MORTON_X[xx] | _MORTON_Y[yy] | _MORTON_Z[zz]).astype(np.uint32, copy=False)
 
 
-def token_width(method: str, stage: int = 1) -> int:
+def token_width(method: str, stage: int = 1, compact: bool = False) -> int:
     if method == "B0":
         return 8
+    if compact:
+        base = int(COMPACT_TOKEN_BYTES[method])
+        # Compact B4 already packs both stage-1 (6b) and stage-2 (6b) inside 5 bytes (40 bits).
+        if method == "B3" and int(stage) > 1:
+            return base + 1
+        return base
     extra = 1 if int(stage) > 1 else 0
     return int(TOKEN_BYTES[method]) + extra
 
@@ -88,21 +98,33 @@ def _has_envelope(method: str, include_envelope: bool | None = None) -> bool:
     return bool(include_envelope)
 
 
-def nbytes_for_count(method: str, n_tokens: int, stage: int = 1, include_envelope: bool | None = None) -> int:
+def nbytes_for_count(
+    method: str,
+    n_tokens: int,
+    stage: int = 1,
+    include_envelope: bool | None = None,
+    compact: bool = False,
+) -> int:
     """Serialized size of a packet that carries exactly this many tokens."""
     if method == "B0" or int(n_tokens) <= 0:
         return 0
-    width = token_width(method, stage)
+    width = token_width(method, stage, compact=compact)
     n_blocks = (int(n_tokens) + BLOCK_TOKENS - 1) // BLOCK_TOKENS
     env = ENVELOPE_SLOT if _has_envelope(method, include_envelope) else 0
     return HEADER_SIZE + env + n_blocks * block_size(width)
 
 
-def budget_for(method: str, target: int = TARGET_BYTES, stage: int = 1, include_envelope: bool | None = None) -> dict:
+def budget_for(
+    method: str,
+    target: int = TARGET_BYTES,
+    stage: int = 1,
+    include_envelope: bool | None = None,
+    compact: bool = False,
+) -> dict:
     """Largest whole-block packing that does not exceed target."""
     if method == "B0":
-        return {"method": method, "n_tokens": 0, "n_blocks": 0, "nbytes": 0, "token_bytes": 0}
-    width = token_width(method, stage)
+        return {"method": method, "n_tokens": 0, "n_blocks": 0, "nbytes": 0, "token_bytes": 0, "compact": bool(compact)}
+    width = token_width(method, stage, compact=compact)
     env = ENVELOPE_SLOT if _has_envelope(method, include_envelope) else 0
     overhead = HEADER_SIZE + env
     bsize = block_size(width)
@@ -116,17 +138,24 @@ def budget_for(method: str, target: int = TARGET_BYTES, stage: int = 1, include_
         "token_bytes": int(width),
         "block_size": int(bsize),
         "envelope": int(env),
+        "compact": bool(compact),
     }
 
 
-def packet_layout(method: str, target: int = FAIR_BUDGET_BYTES, stage: int = 1, include_envelope: bool | None = None) -> dict:
+def packet_layout(
+    method: str,
+    target: int = FAIR_BUDGET_BYTES,
+    stage: int = 1,
+    include_envelope: bool | None = None,
+    compact: bool = False,
+) -> dict:
     """Token count from the byte budget and this method's own token width.
 
     ``serialized`` is ``target`` for B1–B4. ``tail`` is padding after the last
     micro-block and is shorter than one block, so dropping a block cannot
     promote that tail into a token.
     """
-    spec = dict(budget_for(method, target=int(target), stage=stage, include_envelope=include_envelope))
+    spec = dict(budget_for(method, target=int(target), stage=stage, include_envelope=include_envelope, compact=compact))
     spec["target"] = int(target)
     if method == "B0":
         spec["tail"] = 0
@@ -175,19 +204,82 @@ def coarse_from_tristate(tristate: np.ndarray, cells: int = COARSE) -> np.ndarra
     return out
 
 
+def envelope50_bitplanes(tristate: np.ndarray) -> np.ndarray:
+    """Pack a 100x100x8 tri-state grid into 3 bit-planes at 50x50 (0.8m) resolution (939 bytes)."""
+    tri = np.asarray(tristate)
+    if tri.shape != (100, 100, 8):
+        raise ValueError(f"tristate grid must be 100x100x8, got {tri.shape}")
+    blocks = tri.reshape(50, 2, 50, 2, 8)
+    has_free = np.any(blocks == 1, axis=(1, 3, 4)).reshape(-1)
+    has_occ = np.any(blocks == 2, axis=(1, 3, 4)).reshape(-1)
+    has_unk = np.any(blocks == 0, axis=(1, 3, 4)).reshape(-1)
+    return np.concatenate((np.packbits(has_free), np.packbits(has_occ), np.packbits(has_unk))).astype(np.uint8)
+
+
+def pack_zmax25_nibbles(env25: np.ndarray) -> np.ndarray:
+    """Pack 25x25 max-height bin (3-bit values from coarse_from_tristate) into 313 nibble bytes."""
+    zm = ((np.asarray(env25, dtype=np.uint8).reshape(-1) >> np.uint8(3)) & np.uint8(0x07))
+    zm_pad = np.pad(zm, (0, 1))
+    return ((zm_pad[0::2] & np.uint8(0x0F)) | ((zm_pad[1::2] & np.uint8(0x0F)) << np.uint8(4))).astype(np.uint8)
+
+
+def unpack_zmax25_nibbles(nibbles: np.ndarray) -> np.ndarray:
+    arr = np.asarray(nibbles, dtype=np.uint8).reshape(-1)
+    out = np.empty(arr.size * 2, dtype=np.uint8)
+    out[0::2] = arr & np.uint8(0x0F)
+    out[1::2] = (arr >> np.uint8(4)) & np.uint8(0x0F)
+    return out[:625].reshape(25, 25)
+
+
+def pack_hybrid_env50(env50_bp: np.ndarray, env25: np.ndarray | None = None) -> np.ndarray:
+    """Concatenate 50x50 bit-planes (939 B) with optional 25x25 z_max nibbles (313 B -> 1252 B) and 25x25 fallback."""
+    bp = np.ascontiguousarray(env50_bp, dtype=np.uint8).reshape(-1)
+    if bp.size != 939:
+        raise ValueError(f"env50_bp must be 939 bytes, got {bp.size}")
+    if env25 is None:
+        return bp
+    zm = pack_zmax25_nibbles(env25)
+    e25 = np.ascontiguousarray(env25, dtype=np.uint8).reshape(-1)
+    # 939 + 313 + 625 = 1877 B sentinel triggers adaptive framing inside _frame_envelope (never sent uncompressed).
+    return np.concatenate((bp, zm, e25)).astype(np.uint8)
+
+
 def _frame_envelope(raw: np.ndarray | None) -> bytes:
     slot = bytearray(ENVELOPE_SLOT)
     if raw is None:
         return bytes(slot)
     payload = np.ascontiguousarray(raw, dtype=np.uint8).reshape(-1)
+    max_body = ENVELOPE_SLOT - 3
+    # Adaptive multi-resolution envelope (1877 B = 939 B bp50 + 313 B zmax25 + 625 B env25 fallback):
+    # 1) Try 50x50 bit-planes + 25x25 z_max (1252 B raw);
+    # 2) Fallback to 50x50 bit-planes (939 B raw);
+    # 3) Fallback to 25x25 flags+z_max (625 B raw, always <= 250 B zstd).
+    if payload.size == 1877:
+        cand_hybrid = payload[:1252].tobytes()
+        for comp in (_COMPRESSOR, _COMPRESSOR_HIGH):
+            c = comp.compress(cand_hybrid)
+            if 0 < len(c) <= max_body:
+                slot[0:3] = _U16B.pack(len(c), 0)
+                slot[3 : 3 + len(c)] = c
+                return bytes(slot)
+        cand_bp50 = payload[:939].tobytes()
+        for comp in (_COMPRESSOR, _COMPRESSOR_HIGH):
+            c = comp.compress(cand_bp50)
+            if 0 < len(c) <= max_body:
+                slot[0:3] = _U16B.pack(len(c), 0)
+                slot[3 : 3 + len(c)] = c
+                return bytes(slot)
+        payload = payload[1252:]
     raw_bytes = payload.tobytes()
     compressed = _COMPRESSOR.compress(raw_bytes)
+    if len(compressed) > max_body:
+        compressed = _COMPRESSOR_HIGH.compress(raw_bytes)
     use_zstd = len(compressed) > 0 and len(compressed) < len(raw_bytes)
-    use_zstd = use_zstd and len(compressed) <= ENVELOPE_SLOT - 3
+    use_zstd = use_zstd and len(compressed) <= max_body
     if use_zstd:
         body = compressed
         codec = 0
-    elif len(raw_bytes) <= ENVELOPE_SLOT - 3:
+    elif len(raw_bytes) <= max_body:
         body = raw_bytes
         codec = 1
     else:
@@ -222,11 +314,12 @@ def pack_bytes(
     pad_slots: int | None = None,
     tail_bytes: int = 0,
     include_envelope: bool | None = None,
+    compact: bool = False,
 ) -> bytes:
     if method not in METHOD_ID:
         raise KeyError(method)
     pose = np.asarray(pose, dtype=np.float32).reshape(6)
-    width = token_width(method, stage)
+    width = token_width(method, stage, compact=compact)
     if method == "B0":
         tokens = np.zeros((0, width), dtype=np.uint8)
         pad_slots = None
@@ -252,8 +345,9 @@ def pack_bytes(
     padded = np.zeros((n_blocks * BLOCK_TOKENS, width), dtype=np.uint8)
     if count:
         padded[:count] = tokens
+    use_compact = bool(compact and method in {"B3", "B4"})
     has_env = _has_envelope(method, include_envelope)
-    flags = 1 if has_env else 0
+    flags = (FLAG_ENVELOPE if has_env else 0) | (FLAG_COMPACT if use_compact else 0)
     env_slot = ENVELOPE_SLOT if has_env else 0
     header = _HEADER.pack(
         MAGIC,
@@ -364,6 +458,7 @@ def unpack_bytes(blob: bytes) -> dict:
         "yaw_rate": float(fields[18]),
         "stage": int(fields[8]),
         "flags": int(fields[9]),
+        "compact": bool(int(fields[9]) & FLAG_COMPACT),
         "n_blocks_header": n_blocks,
         "n_blocks": n_parse,
         "tokens": tokens,

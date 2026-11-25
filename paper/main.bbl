@@ -53,9 +53,14 @@ R.~Song, C.~Liang, H.~Cao, Z.~Yan, W.~Zimmer, M.~Gross, A.~Festag, A.~Knoll,
   Computer Vision and Pattern Recognition (CVPR), 2024, pp. 17996--18006.
 
 \bibitem{wu2025co3sop}
-H.~Wu, M.~Tsukada, et~al., A synthetic benchmark for collaborative {3D}
-  semantic occupancy prediction in {V2X}-enabled autonomous driving, arXiv
-  preprint arXiv:2502.18015 (2025).
+H.~Wu, P.~Lin, E.~Javanmardi, N.~Bao, B.~Qian, H.~Si, M.~Tsukada, {Co3SOP}: A
+  synthetic benchmark for collaborative {3D} semantic occupancy prediction in
+  {V2X} autonomous driving, arXiv preprint arXiv:2506.17004 (2025).
+
+\bibitem{chen2026vogscp}
+C.~Chen, H.~Huang, S.~Bagchi, Vision-only gaussian splatting for collaborative
+  semantic occupancy prediction, in: Proceedings of the AAAI Conference on
+  Artificial Intelligence (AAAI), 2026.
 
 \bibitem{li2026vqsop}
 F.~Li, C.~Zhang, G.~Chen, Sparse-aware vector quantization for
@@ -78,6 +83,12 @@ C.~Fifty, R.~G. Junkins, D.~Duan, A.~Iyengar, J.~W. Liu, E.~Amid, S.~Thrun,
   C.~R{\'e}, Restructuring vector quantization with the rotation trick, in:
   Proceedings of the International Conference on Learning Representations
   (ICLR), 2025.
+
+\bibitem{berman2018lovasz}
+M.~Berman, A.~R. Triki, M.~B. Blaschko, The {Lov{\'a}sz}-softmax loss: A
+  tractable surrogate for the optimization of the intersection-over-union
+  measure in neural networks, in: Proceedings of the IEEE/CVF Conference on
+  Computer Vision and Pattern Recognition (CVPR), 2018, pp. 4413--4421.
 
 \bibitem{chen2019cooper}
 Q.~Chen, S.~Tang, Q.~Yang, S.~Fu, Cooper: Cooperative perception for connected
@@ -190,6 +201,16 @@ Y.~Hu, Y.~Lu, R.~Xu, W.~Xie, S.~Chen, Y.~Wang, Collaboration helps camera
   Conference on Computer Vision and Pattern Recognition (CVPR), 2023, pp.
   9243--9252.
 
+\bibitem{hawlader2024edge}
+F.~Hawlader, F.~Robinet, R.~Frank, Leveraging the edge and cloud for
+  {V2X}-based real-time object detection in autonomous driving, Computer
+  Communications 213 (2024) 372--381.
+
+\bibitem{hawlader2026bandwidth}
+F.~Hawlader, R.~Meireles, G.~Elghazaly, A.~Aguiar, R.~Frank, Bandwidth-adaptive
+  cloud-assisted 360-degree {3D} perception for autonomous vehicles, Computer
+  Communications 251 (2026) 108496.
+
 \bibitem{cao2022monoscene}
 A.-Q. Cao, R.~de~Charette, {MonoScene}: Monocular {3D} semantic scene
   completion, in: Proceedings of the IEEE/CVF Conference on Computer Vision and
@@ -255,6 +276,12 @@ N.~Zeghidour, A.~Luebs, A.~Omran, J.~Skoglund, M.~Tagliasacchi, {SoundStream}:
 A.~D{\'e}fossez, J.~Copet, G.~Synnaeve, Y.~Adi, High fidelity neural audio
   compression, Transactions on Machine Learning Research (2023).
 
+\bibitem{zhao2026quantv2x}
+S.~Z. Zhao, H.~Zhang, Z.~Li, J.~Peng, A.~Chui, Z.~Zhou, Z.~Meng, H.~Xiang,
+  Z.~Huang, F.~Wang, R.~Tian, C.~Xu, B.~Zhou, J.~Ma, {QuantV2X}: A fully
+  quantized multi-agent system for cooperative perception, in: Proceedings of
+  the European Conference on Computer Vision (ECCV), 2026.
+
 \bibitem{elfes1989occupancy}
 A.~Elfes, Using occupancy grids for mobile robot perception and navigation,
   Computer 22~(6) (1989) 46--57.
@@ -291,6 +318,10 @@ C.~Guo, G.~Pleiss, Y.~Sun, K.~Q. Weinberger, On calibration of modern neural
 \bibitem{morton1966zorder}
 G.~M. Morton, A computer oriented geodetic data base and a new technique in
   file sequencing, Tech. rep., IBM Ltd., Ottawa, Canada (1966).
+
+\bibitem{wu2018groupnorm}
+Y.~Wu, K.~He, Group normalization, in: Proceedings of the European Conference
+  on Computer Vision (ECCV), 2018, pp. 3--19.
 
 \bibitem{loshchilov2019adamw}
 I.~Loshchilov, F.~Hutter, Decoupled weight decay regularization, in:

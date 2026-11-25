@@ -19,7 +19,7 @@ from borrowedsight.grid import (
 from borrowedsight.labels import GROUND, N_CLASS, ROAD, THINGS, VERTICAL
 from borrowedsight.messages import coords_to_ego, encode_packet, quota_indices, scatter_values, topk_indices
 from borrowedsight.nets import GX, GY, GZ, ReceiverDecoder, SenderEncoder
-from borrowedsight.packer import unpack_bytes
+from borrowedsight.packer import pack_hybrid_env50, unpack_bytes, unpack_zmax25_nibbles
 
 GROUP_OF = torch.full((N_CLASS,), -1, dtype=torch.long)
 for _cls in THINGS:
@@ -39,7 +39,7 @@ for _cls in VERTICAL:
 _SCORE_TARGET_CPU[ROAD] = 0.0
 _SCORE_TARGET_CACHE: dict[str, torch.Tensor] = {}
 
-VALID_ENVELOPE_SIZES = {400: 20, 625: 25}
+VALID_ENVELOPE_SIZES = {400: 20, 625: 25, 939: 50, 1252: 50, 1877: 50}
 
 
 def _ego_bev_xy(device: torch.device) -> torch.Tensor:
@@ -104,12 +104,19 @@ class BorrowedSight(nn.Module):
         default_stage: int = 1,
         envelope_cells: int = 20,
         use_cls_embed: bool = True,
+        compact_wire: bool = False,
+        true_residual: bool = False,
+        use_zmax_env: bool = False,
+        use_norm_pe: bool = False,
+        use_time_decay: bool = False,
+        road_floor: float = 0.0,
+        decouple_env: bool = False,
     ):
         super().__init__()
         if method not in {"B0", "B1", "B2", "B3", "B4"}:
             raise KeyError(method)
-        if int(envelope_cells) not in {20, 25}:
-            raise ValueError(f"envelope_cells must be 20 or 25, got {envelope_cells}")
+        if int(envelope_cells) not in {20, 25, 50}:
+            raise ValueError(f"envelope_cells must be 20, 25, or 50, got {envelope_cells}")
         self.method = method
         self.feat_dim = int(feat_dim)
         self.codebook_size = int(codebook_size)
@@ -119,8 +126,21 @@ class BorrowedSight(nn.Module):
         self.default_stage = int(default_stage)
         self.envelope_cells = int(envelope_cells)
         self.use_cls_embed = bool(use_cls_embed) if method == "B4" else False
+        self.compact_wire = bool(compact_wire)
+        self.true_residual = bool(true_residual) if method == "B4" else False
+        self.use_zmax_env = bool(use_zmax_env)
+        self.use_norm_pe = bool(use_norm_pe)
+        self.use_time_decay = bool(use_time_decay)
+        self.road_floor = float(road_floor)
+        self.decouple_env = bool(decouple_env)
+        self.extra_channels = 8 if self.use_zmax_env else 7
         self.encoder = SenderEncoder(feat_dim)
-        self.decoder = ReceiverDecoder(feat_dim)
+        self.decoder = ReceiverDecoder(
+            feat_dim,
+            extra_channels=self.extra_channels,
+            use_norm_pe=self.use_norm_pe,
+            decouple_env=self.decouple_env,
+        )
         self.fuse = nn.Sequential(
             nn.Linear(feat_dim + 6, feat_dim),
             nn.GELU(),
@@ -162,12 +182,12 @@ class BorrowedSight(nn.Module):
             return unknown_output(batch, pose.device)
         return self.render(placed, pose, stamp, move)
 
-    def render(self, placed, pose, stamp, move) -> dict:
+    def build_inputs(self, placed, pose, stamp, move) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         batch = int(pose.shape[0])
         device = pose.device
         feat = pose.new_zeros(batch, self.feat_dim, GX, GY, GZ)
         weight = pose.new_zeros(batch, GX, GY, GZ)
-        extra = pose.new_zeros(batch, 7, GX, GY)
+        extra = pose.new_zeros(batch, self.extra_channels, GX, GY)
         extra[:, 2] = 1.0
         extra[:, 5] = (move[:, 0] / 20.0).view(batch, 1, 1)
         extra[:, 6] = (move[:, 1] / 20.0).view(batch, 1, 1)
@@ -179,6 +199,10 @@ class BorrowedSight(nn.Module):
                 nonempty[b] = True
                 self._paint(feat[b], weight[b], extra[b], item)
         feat = feat / weight.unsqueeze(1).clamp(min=1.0e-6)
+        return feat, extra, nonempty
+
+    def render(self, placed, pose, stamp, move) -> dict:
+        feat, extra, nonempty = self.build_inputs(placed, pose, stamp, move)
         pred = self.decoder(feat, extra)
         return _force_unknown_where(pred, torch.logical_not(nonempty))
 
@@ -209,7 +233,7 @@ class BorrowedSight(nn.Module):
             salience = torch.where(usable, cached["geo"][:, 0].detach(), torch.full_like(logits, -1.0e4))
             chosen = topk_indices(salience, n_tokens)
         elif self.method == "B4" and self.use_quota:
-            chosen = quota_indices(logits.detach(), classes, n_tokens)
+            chosen = quota_indices(logits.detach(), classes, n_tokens, road_floor=self.road_floor)
         else:
             chosen = topk_indices(logits.detach(), n_tokens)
         if chosen.numel() > 0:
@@ -221,7 +245,9 @@ class BorrowedSight(nn.Module):
         code_l0 = None if codes is None else codes[:, 0]
         conf = torch.sigmoid(logits[chosen].detach()).clamp(0, 1) if chosen.numel() else fused.new_zeros(0)
         if self.use_envelope:
-            if self.envelope_cells == 25 and cached.get("envelope25") is not None:
+            if self.envelope_cells == 50 and cached.get("envelope50") is not None:
+                envelope = pack_hybrid_env50(cached["envelope50"], cached.get("envelope25"))
+            elif self.envelope_cells >= 25 and cached.get("envelope25") is not None:
                 envelope = cached["envelope25"]
             else:
                 envelope = cached.get("envelope")
@@ -250,6 +276,7 @@ class BorrowedSight(nn.Module):
                 pad_slots=pad_slots,
                 tail_bytes=tail_bytes,
                 include_envelope=self.use_envelope,
+                compact=self.compact_wire,
             )
         elif not serialize and self.method != "B0" and (wire.numel() > 0 or pad_slots):
             blob = b"\x01"
@@ -314,6 +341,15 @@ class BorrowedSight(nn.Module):
             recon, codes, loss = _quantize_book(self.quant, fused, stage)
             return recon, recon, codes, loss
         if self.method == "B4":
+            if self.use_cls_embed and self.true_residual:
+                cls_proto = self.cls_embed(classes.clamp(0, N_CLASS - 1)).to(fused.dtype)
+                res_in = fused - cls_proto
+                if self.use_grouped_books:
+                    recon_res, codes, loss = self._quantize_grouped(res_in, classes, stage)
+                else:
+                    recon_res, codes, loss = _quantize_book(self.quant, res_in, stage)
+                recon = cls_proto + recon_res
+                return recon, recon, codes, loss
             if self.use_grouped_books:
                 recon, codes, loss = self._quantize_grouped(fused, classes, stage)
             else:
@@ -367,7 +403,8 @@ class BorrowedSight(nn.Module):
         from borrowedsight.codec import decode_tokens, demorton3
 
         stage = int(view["stage"])
-        tokens = decode_tokens(view["method"], view["tokens"], stage=stage)
+        compact = bool(view.get("compact", False))
+        tokens = decode_tokens(view["method"], view["tokens"], stage=stage, compact=compact)
         morton = tokens["morton"]
         ego_np = ego_pose.detach().cpu().numpy() if torch.is_tensor(ego_pose) else np.asarray(ego_pose, dtype=np.float32)
         sender_np = np.asarray(view["pose"], dtype=np.float32)
@@ -452,10 +489,14 @@ class BorrowedSight(nn.Module):
                 item.get("sender_pose"),
                 item.get("ego_pose"),
             )
+        age = float(item.get("age", 0.0))
         if item["values"] is not None and item["coords_ego"].numel() > 0:
-            scatter_values(feat, weight, item["coords_ego"], item["values"], item["conf"].clamp(min=1.0e-3))
+            w = item["conf"].clamp(min=1.0e-3)
+            if self.use_time_decay and age > 0.0:
+                w = w * float(np.exp(-age / 0.5))
+            scatter_values(feat, weight, item["coords_ego"], item["values"], w)
             self._carve(extra, item, env_free_ego=env_free_ego)
-        age_value = min(float(item.get("age", 0.0)), 5.0) / 5.0
+        age_value = min(age, 1.0) if self.use_time_decay else (min(age, 5.0) / 5.0)
         extra[4] = torch.maximum(extra[4], extra.new_full((), age_value))
 
     def _carve(self, extra, item, env_free_ego: torch.Tensor | None = None) -> None:
@@ -526,23 +567,51 @@ def _lookup_book(book: ResidualSimVQ, codes: torch.Tensor, stage: int) -> torch.
     return out.to(torch.float32)
 
 
+def _unpack_env50_bp(raw939: np.ndarray) -> np.ndarray:
+    arr = np.asarray(raw939, dtype=np.uint8).reshape(-1)
+    f = np.unpackbits(arr[0:313])[:2500].reshape(50, 50)
+    o = np.unpackbits(arr[313:626])[:2500].reshape(50, 50)
+    u = np.unpackbits(arr[626:939])[:2500].reshape(50, 50)
+    return (f + o * 2 + u * 4).astype(np.uint8)
+
+
 def _paint_envelope(
     extra: torch.Tensor,
     flags: np.ndarray,
     sender_pose=None,
     ego_pose=None,
 ) -> torch.Tensor:
-    """Warp the sender-frame 20x20 or 25x25 coarse visibility envelope into the EGO 100x100 grid."""
-    size = int(flags.size)
+    """Warp sender-frame 20x20, 25x25, or 50x50 (+ optional z_max) visibility envelope into EGO 100x100 grid."""
+    flat = np.asarray(flags, dtype=np.uint8).reshape(-1)
+    size = int(flat.size)
     if size not in VALID_ENVELOPE_SIZES:
         raise ValueError(f"unsupported envelope size {size}; expected one of {sorted(VALID_ENVELOPE_SIZES)}")
-    cells = VALID_ENVELOPE_SIZES[size]
+    zmax_grid_np = None
+    zmax_cells = 0
+    if size in {939, 1252, 1877}:
+        cells = 50
+        img_np = _unpack_env50_bp(flat[:939])
+        if size in {1252, 1877}:
+            zmax_grid_np = unpack_zmax25_nibbles(flat[939:1252])
+            zmax_cells = 25
+    else:
+        cells = VALID_ENVELOPE_SIZES[size]
+        img_np = flat.reshape(cells, cells)
+        zmax_grid_np = ((img_np >> np.uint8(3)) & np.uint8(0x07)).astype(np.uint8)
+        zmax_cells = cells
+
     scale = GX // cells
-    image = torch.as_tensor(flags.reshape(cells, cells), device=extra.device, dtype=torch.int64)
+    image = torch.as_tensor(img_np, device=extra.device, dtype=torch.int64)
+    want_zmax = int(extra.shape[0]) >= 8 and zmax_grid_np is not None
+    zmax_ego = None
     if sender_pose is None or ego_pose is None:
         free = ((image & 1) != 0).to(dtype=extra.dtype).repeat_interleave(scale, 0).repeat_interleave(scale, 1)
         occ = ((image & 2) != 0).to(dtype=extra.dtype).repeat_interleave(scale, 0).repeat_interleave(scale, 1)
         unk = ((image & 4) != 0).to(dtype=extra.dtype).repeat_interleave(scale, 0).repeat_interleave(scale, 1)
+        if want_zmax:
+            zm_scale = GX // zmax_cells
+            zm_t = torch.as_tensor(zmax_grid_np, device=extra.device, dtype=extra.dtype) / 7.0
+            zmax_ego = zm_t.repeat_interleave(zm_scale, 0).repeat_interleave(zm_scale, 1)
     else:
         # Backward warp: transform EGO BEV cell centers into the sender's local frame.
         ego_pts = _ego_bev_xy(extra.device)
@@ -557,10 +626,23 @@ def _paint_envelope(
         free = (((sampled & 1) != 0) & valid).view(GX, GY).to(dtype=extra.dtype)
         occ = (((sampled & 2) != 0) & valid).view(GX, GY).to(dtype=extra.dtype)
         unk = ((((sampled & 4) != 0) & valid) | (~valid)).view(GX, GY).to(dtype=extra.dtype)
+        if want_zmax:
+            zm_t = torch.as_tensor(zmax_grid_np, device=extra.device, dtype=extra.dtype) / 7.0
+            if zmax_cells == cells:
+                zmax_ego = (zm_t[cx, cy] * valid.to(dtype=extra.dtype)).view(GX, GY)
+            else:
+                min_z, inv_z = _env_grid_params(extra.device, zmax_cells)
+                zxy = torch.floor((pts_s[:, :2] - min_z) * inv_z).to(torch.long)
+                zvalid = (zxy[:, 0] >= 0) & (zxy[:, 0] < zmax_cells) & (zxy[:, 1] >= 0) & (zxy[:, 1] < zmax_cells)
+                zx = zxy[:, 0].clamp(0, zmax_cells - 1)
+                zy = zxy[:, 1].clamp(0, zmax_cells - 1)
+                zmax_ego = (zm_t[zx, zy] * zvalid.to(dtype=extra.dtype)).view(GX, GY)
     extra[0] = torch.maximum(extra[0], free)
     extra[1] = torch.maximum(extra[1], occ)
     evidence = free + occ
     extra[2] = torch.where(evidence > 0, torch.minimum(extra[2], unk), extra[2])
+    if zmax_ego is not None:
+        extra[7] = torch.maximum(extra[7], zmax_ego)
     return free
 
 

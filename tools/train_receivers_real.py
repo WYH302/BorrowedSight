@@ -64,6 +64,7 @@ def load_cached_split(cache_dir: Path) -> list[dict]:
             pred_all = blob["pred_class"]
             envelope_all = blob["envelope"]
             envelope25_all = blob["envelope25"] if "envelope25" in blob.files else None
+            envelope50_all = blob["envelope50"] if "envelope50" in blob.files else None
             for i in range(n_f):
                 s0, s1 = int(f_off[i]), int(f_off[i + 1])
                 senders = []
@@ -82,6 +83,7 @@ def load_cached_split(cache_dir: Path) -> list[dict]:
                             "pred_class": torch.from_numpy(pred_all[k0:k1].astype(np.int64)),
                             "envelope": np.asarray(envelope_all[si], dtype=np.uint8),
                             "envelope25": np.asarray(envelope25_all[si], dtype=np.uint8) if envelope25_all is not None else None,
+                            "envelope50": np.asarray(envelope50_all[si], dtype=np.uint8) if envelope50_all is not None else None,
                         }
                     )
                 gt_sem = np.asarray(gt_semantic[i], dtype=np.uint8)

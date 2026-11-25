@@ -1,0 +1,7 @@
+Highlights
+
+- Formalizes strict zero-ego cooperative 3D semantic occupancy over V2X links.
+- Zero-waste 5 B/token packing pairs class embeddings with 2-stage grouped VQ.
+- Task-decoupled 50x50 Zstd visibility envelopes cut UFE without semantic drop.
+- Reaches 0.4255 mIoU (32 KB) and 0.4067 at 16 KB (beats 32 KB shared VQ).
+- Pure-PyTorch pipeline runs at 84-95 FPS (1 sender) and 26-29 FPS (4 senders).

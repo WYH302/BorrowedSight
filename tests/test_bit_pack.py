@@ -369,3 +369,138 @@ def test_vectorized_quota_and_eval_vq_match_reference():
         assert torch.equal(codes_ref, codes_fast), f"stage {st} codes mismatch"
         assert torch.allclose(recon_ref.detach(), recon_fast, atol=1e-5)
         assert torch.allclose(recon_fast, lookup_fast, atol=1e-5)
+
+
+def test_v2_compact_wire_true_residual_env50_and_losses():
+    import torch
+    from borrowedsight.losses import asymmetric_ufe_loss, bev_d4_augment, lovasz_softmax_masked
+    from borrowedsight.model import BorrowedSight
+    from borrowedsight.packer import coarse_from_tristate, envelope50_bitplanes
+
+    torch.manual_seed(7)
+    tri = np.zeros((100, 100, 8), dtype=np.uint8)
+    tri[10:90, 15:85, 1:5] = 1
+    tri[30:36, 40:44, 2:6] = 2
+    tri[60:66, 55:62, 1:5] = 2
+    env20 = coarse_from_tristate(tri, cells=20)
+    env25 = coarse_from_tristate(tri, cells=25)
+    env50 = envelope50_bitplanes(tri)
+    assert env50.shape == (939,)
+
+    ego_pose = np.array([10.0, -5.0, 1.5, 0.0, 20.0, 0.0], dtype=np.float32)
+    sender_pose = np.array([10.0, -5.0, 1.5, 0.0, 20.0, 0.0], dtype=np.float32)
+    # Cover ALL four quadrants including x >= 64, y >= 64, x = 99, y = 99, z = 7!
+    xs = torch.tensor([0, 15, 31, 48, 63, 64, 79, 95, 99] * 6, dtype=torch.long)[:48]
+    ys = torch.tensor([0, 22, 45, 63, 64, 72, 85, 98, 99] * 6, dtype=torch.long)[:48]
+    zs = torch.arange(48, dtype=torch.long) % 8
+    cached = {
+        "sender_id": 2,
+        "pose": sender_pose,
+        "timestamp": 1.0,
+        "speed": 6.0,
+        "yaw_rate": 0.05,
+        "coords": torch.stack([xs, ys, zs], dim=1).long(),
+        "feats": torch.randn(48, 16),
+        "geo": torch.randn(48, 6),
+        "pred_class": torch.tensor([(i % 12) + 1 for i in range(48)], dtype=torch.long),
+        "envelope": env20,
+        "envelope25": env25,
+        "envelope50": env50,
+    }
+
+    # Check exact byte equality across B3 compact (4B) and B4-v2 compact (5B w/ Stage-2 + 50x50 hybrid env)
+    for target in (FAIR_BUDGET_BYTES, TARGET_BYTES):
+        m_b3 = BorrowedSight("B3", feat_dim=16, codebook_size=32, compact_wire=True, use_norm_pe=True, use_time_decay=True)
+        m_b4 = BorrowedSight(
+            "B4",
+            feat_dim=16,
+            codebook_size=32,
+            default_stage=2,
+            envelope_cells=50,
+            compact_wire=True,
+            true_residual=True,
+            use_zmax_env=True,
+            use_norm_pe=True,
+            use_time_decay=True,
+            road_floor=0.10,
+        )
+        # Verify gradient flows through cls_embed and fuse under true_residual=True
+        m_b4.train()
+        b_b4 = packet_layout("B4", target, stage=2, include_envelope=True, compact=True)
+        sent_tr = m_b4.transmit(cached, ego_pose, receiver_id=0, n_tokens=b_b4["n_tokens"], budget=b_b4, serialize=False)
+        (sent_tr["recon"].pow(2).mean() + sent_tr["vq_loss"]).backward()
+        assert m_b4.cls_embed.weight.grad.abs().sum().item() > 0.0
+        assert sum(p.grad.abs().sum().item() for p in m_b4.fuse.parameters() if p.grad is not None) > 0.0
+
+        m_b3.eval()
+        m_b4.eval()
+        b_b3 = packet_layout("B3", target, stage=1, include_envelope=False, compact=True)
+        assert b_b3["token_bytes"] == 4
+        assert b_b4["token_bytes"] == 5
+        with torch.no_grad():
+            s3 = m_b3.transmit(cached, ego_pose, receiver_id=0, n_tokens=b_b3["n_tokens"], budget=b_b3, serialize=True)
+            s4 = m_b4.transmit(cached, ego_pose, receiver_id=0, n_tokens=b_b4["n_tokens"], budget=b_b4, serialize=True)
+            assert len(s3["blob"]) == target
+            assert len(s4["blob"]) == target
+            v4 = unpack_bytes(s4["blob"])
+            assert v4["compact"] is True
+            assert v4["envelope"].size in {625, 939, 1252}
+            # Drop block on compact 5B packet preserves surviving blocks cleanly
+            dmg = drop_block(s4["blob"], 0)
+            assert unpack_bytes(dmg)["n_blocks"] == v4["n_blocks"] - 1
+            # Exact TX vs RX lookup & coordinate parity across ALL four quadrants (x,y in 0..99, z in 0..7)
+            pose_t = torch.as_tensor(ego_pose).unsqueeze(0)
+            stamp_t = torch.tensor([1.0])
+            motion_t = torch.zeros(1, 2)
+            for mod, sent_d in ((m_b3, s3), (m_b4, s4)):
+                ptx = mod.placed_from_transmit(sent_d, pose_t[0], ego_time=1.0)
+                prx = mod._placed_from_blob(sent_d["blob"], pose_t[0], ego_time=1.0)
+                assert ptx["coords_ego"].shape == prx["coords_ego"].shape
+                ftx, etx, _ = mod.build_inputs([[ptx]], pose_t, stamp_t, motion_t)
+                frx, erx, _ = mod.build_inputs([[prx]], pose_t, stamp_t, motion_t)
+                assert torch.allclose(ftx, frx, atol=5e-2), f"{mod.method} compact TX!=RX feat: {(ftx-frx).abs().max().item()}"
+                assert torch.allclose(etx, erx, atol=1e-4), f"{mod.method} compact TX!=RX extra: {(etx-erx).abs().max().item()}"
+            # Verify forward runs cleanly with 8-ch extra (z_max active) and time decay
+            out4 = m_b4(pose_t, torch.tensor([1.2]), motion_t, [[s4["blob"]]])
+            assert out4["sem"].shape == (1, 13, 100, 100, 8)
+            assert out4["tri"].shape == (1, 3, 100, 100, 8)
+            # Verify Task-Decoupled Visibility Fusion (TDVF) keeps sem strictly invariant to envelope channels!
+            m_tdvf = BorrowedSight(
+                "B4",
+                feat_dim=16,
+                codebook_size=32,
+                default_stage=2,
+                envelope_cells=50,
+                compact_wire=True,
+                true_residual=False,
+                use_zmax_env=True,
+                use_norm_pe=True,
+                use_time_decay=True,
+                decouple_env=True,
+            ).eval()
+            with torch.no_grad():
+                f_zero = torch.randn(1, 16, 100, 100, 8)
+                e_a = torch.zeros(1, 8, 100, 100)
+                e_b = torch.zeros(1, 8, 100, 100)
+                e_b[:, 0:3] = 1.0
+                e_b[:, 7] = 1.0
+                oa = m_tdvf.decoder(f_zero, e_a)
+                ob = m_tdvf.decoder(f_zero, e_b)
+                assert torch.equal(oa["sem"], ob["sem"]), "TDVF leaked envelope channels into sem_head!"
+                assert not torch.equal(oa["tri"], ob["tri"]), "TDVF tri_head ignored envelope channels!"
+
+    # Check Lovasz, UFE loss, and D4 BEV augmentation shapes/finiteness
+    sem_logits = torch.randn(2, 13, 10, 10, 8, requires_grad=True)
+    tri_logits = torch.randn(2, 3, 10, 10, 8, requires_grad=True)
+    sem_t = torch.randint(0, 13, (2, 10, 10, 8))
+    tri_t = torch.randint(0, 3, (2, 10, 10, 8))
+    l_lov = lovasz_softmax_masked(sem_logits, sem_t)
+    l_ufe = asymmetric_ufe_loss(tri_logits, tri_t)
+    assert torch.isfinite(l_lov) and l_lov.item() >= 0.0
+    assert torch.isfinite(l_ufe) and l_ufe.item() >= 0.0
+    (l_lov + l_ufe).backward()
+    assert sem_logits.grad is not None and tri_logits.grad is not None
+    feat = torch.randn(2, 16, 10, 10, 8)
+    extra = torch.randn(2, 8, 10, 10)
+    f2, e2, s2, t2 = bev_d4_augment(feat, extra, sem_t, tri_t, np.random.default_rng(0))
+    assert f2.shape == feat.shape and e2.shape == extra.shape and s2.shape == sem_t.shape and t2.shape == tri_t.shape

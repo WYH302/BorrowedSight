@@ -23,7 +23,7 @@ from borrowedsight.geometry import geo_stats
 from borrowedsight.grid import GRID_SIZE, transform_points
 from borrowedsight.model import BorrowedSight
 from borrowedsight.opv2v_data import RealOPV2VDataset
-from borrowedsight.packer import coarse_from_tristate
+from borrowedsight.packer import coarse_from_tristate, envelope50_bitplanes
 from borrowedsight.paths import CHECKPOINTS, CONFIGS, DATA_ROOT
 from borrowedsight.weather import lisa_fog, lisa_rain, load_weather
 from tools.ray_visibility import ray_visibility, union_tristate
@@ -70,6 +70,7 @@ def encode_one_sender(
     tri_np = tri.detach().cpu().numpy()
     envelope = coarse_from_tristate(tri_np, cells=20)
     envelope25 = coarse_from_tristate(tri_np, cells=25)
+    envelope50 = envelope50_bitplanes(tri_np)
     return {
         "sender_id": int(sender_id),
         "pose": np.asarray(pose, dtype=np.float32),
@@ -82,6 +83,7 @@ def encode_one_sender(
         "pred_class": pred.detach().cpu().numpy().astype(np.uint8),
         "envelope": envelope.astype(np.uint8),
         "envelope25": envelope25.astype(np.uint8),
+        "envelope50": envelope50.astype(np.uint8),
     }
 
 
@@ -122,6 +124,7 @@ def flush_shard(out_dir: Path, shard_id: int, frames: list[dict], sender_rows: l
         sender_yaw_rate=np.array([r["yaw_rate"] for r in sender_rows], dtype=np.float32),
         envelope=np.stack([r["envelope"] for r in sender_rows]).astype(np.uint8) if sender_rows else np.zeros((0, 20, 20), np.uint8),
         envelope25=np.stack([r["envelope25"] for r in sender_rows]).astype(np.uint8) if sender_rows else np.zeros((0, 25, 25), np.uint8),
+        envelope50=np.stack([r["envelope50"] for r in sender_rows]).astype(np.uint8) if sender_rows else np.zeros((0, 939), np.uint8),
         token_offsets=s_offsets,
         coords=np.concatenate(coords, axis=0) if coords else np.zeros((0, 3), np.int16),
         feats=np.concatenate(feats, axis=0) if feats else np.zeros((0, 16), np.float16),
