@@ -82,27 +82,34 @@ def _match(x: torch.Tensor, ref: torch.Tensor) -> torch.Tensor:
 
 
 class SenderEncoder(nn.Module):
-    def __init__(self, feat_dim: int = 16):
+    def __init__(self, feat_dim: int = 16, use_norm_pe: bool = False, use_max_pool: bool = False):
         super().__init__()
         self.feat_dim = int(feat_dim)
+        self.use_norm_pe = bool(use_norm_pe)
+        self.use_max_pool = bool(use_max_pool)
+        self.pool_channels = 7 if self.use_max_pool else 4
         folded = self.feat_dim * GZ
-        self.in_proj = nn.Conv3d(4, self.feat_dim, 1)
+        self.in_proj = nn.Conv3d(self.pool_channels, self.feat_dim, 1)
         self.stem = nn.Conv2d(folded, 64, 3, padding=1)
-        self.enc1 = ResBlock(64)
+        self.enc1 = ResBlock(64, use_norm=self.use_norm_pe)
         self.down1 = nn.Conv2d(64, 96, 3, stride=2, padding=1)
-        self.enc2 = ResBlock(96)
+        self.enc2 = ResBlock(96, use_norm=self.use_norm_pe)
         self.down2 = nn.Conv2d(96, 128, 3, stride=2, padding=1)
-        self.bottleneck = ResBlock(128)
-        self.attn = CoarseSDPA(128, heads=4)
+        self.bottleneck = ResBlock(128, use_norm=self.use_norm_pe)
+        self.attn = CoarseSDPA(128, heads=4, use_pe=self.use_norm_pe)
         self.up2 = nn.ConvTranspose2d(128, 96, 2, stride=2)
-        self.dec2 = ResBlock(96)
+        self.dec2 = ResBlock(96, use_norm=self.use_norm_pe)
         self.up1 = nn.ConvTranspose2d(96, 64, 2, stride=2)
-        self.dec1 = ResBlock(64)
+        self.dec1 = ResBlock(64, use_norm=self.use_norm_pe)
         self.out_feat = nn.Conv2d(64, folded, 1)
         self.out_sem = nn.Conv2d(64, N_CLASS * GZ, 1)
 
     def forward(self, points: torch.Tensor, mask: torch.Tensor) -> dict:
         pooled = self._pool(points, mask)
+        return self.forward_from_pooled(pooled)
+
+    def forward_from_pooled(self, pooled: torch.Tensor) -> dict:
+        """Forward directly from pre-pooled voxel tensor [B, C_pool, GZ, GX, GY] (enables exact D4 BEV aug)."""
         hidden = self.in_proj(pooled)
         batch = hidden.shape[0]
         folded = hidden.reshape(batch, self.feat_dim * GZ, GX, GY)
@@ -120,7 +127,8 @@ class SenderEncoder(nn.Module):
 
     def _pool(self, points: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         batch = points.shape[0]
-        pooled = points.new_zeros(batch, 4, GZ, GX, GY)
+        pooled = points.new_zeros(batch, self.pool_channels, GZ, GX, GY)
+        n_vox = GX * GY * GZ
         for b in range(batch):
             pts = points[b][mask[b]]
             if pts.numel() == 0:
@@ -131,17 +139,31 @@ class SenderEncoder(nn.Module):
             idx = idx[valid]
             kept = pts[valid].to(dtype=torch.float32)
             centers = voxel_centers_torch(idx).to(dtype=torch.float32)
-            feat = torch.cat(
-                (kept - centers, torch.ones(kept.shape[0], 1, device=kept.device, dtype=kept.dtype)),
-                dim=1,
-            )
+            offsets = kept - centers
             lin = linear_index(idx)
-            acc = kept.new_zeros(GX * GY * GZ, 4)
-            acc.index_add_(0, lin, feat)
-            count = kept.new_zeros(GX * GY * GZ)
+            count = kept.new_zeros(n_vox)
             count.index_add_(0, lin, torch.ones(kept.shape[0], device=kept.device, dtype=kept.dtype))
-            mean = acc / count.clamp(min=1).unsqueeze(1)
-            pooled[b] = mean.view(GX, GY, GZ, 4).permute(3, 2, 0, 1).contiguous()
+            if not self.use_max_pool:
+                feat = torch.cat(
+                    (offsets, torch.ones(kept.shape[0], 1, device=kept.device, dtype=kept.dtype)),
+                    dim=1,
+                )
+                acc = kept.new_zeros(n_vox, 4)
+                acc.index_add_(0, lin, feat)
+                mean = acc / count.clamp(min=1).unsqueeze(1)
+                pooled[b] = mean.view(GX, GY, GZ, 4).permute(3, 2, 0, 1).contiguous()
+            else:
+                acc = kept.new_zeros(n_vox, 3)
+                acc.index_add_(0, lin, offsets)
+                mean_off = acc / count.clamp(min=1).unsqueeze(1)
+                # D4-equivariant peak descriptors: max(|dx|), max(|dy|), max(dz)
+                abs_xy_z = torch.stack((offsets[:, 0].abs(), offsets[:, 1].abs(), offsets[:, 2]), dim=1)
+                mx = kept.new_full((n_vox, 3), -1.0e4)
+                mx.scatter_reduce_(0, lin.unsqueeze(1).expand(-1, 3), abs_xy_z, reduce="amax", include_self=True)
+                mx = torch.where((count > 0).unsqueeze(1), mx, torch.zeros_like(mx))
+                log_den = torch.log1p(count).unsqueeze(1) / 4.0
+                vox_feat = torch.cat((mean_off, mx, log_den), dim=1)
+                pooled[b] = vox_feat.view(GX, GY, GZ, 7).permute(3, 2, 0, 1).contiguous()
         return pooled
 
 
@@ -160,13 +182,30 @@ class ReceiverDecoder(nn.Module):
         extra_channels: int = 7,
         use_norm_pe: bool = False,
         decouple_env: bool = False,
+        use_sem_film: bool = False,
+        use_code_fill: bool = False,
+        use_sarc: bool = False,
     ):
         super().__init__()
         self.feat_dim = int(feat_dim)
         self.extra_channels = int(extra_channels)
         self.use_norm_pe = bool(use_norm_pe)
         self.decouple_env = bool(decouple_env)
+        self.use_sem_film = bool(use_sem_film)
+        self.use_code_fill = bool(use_code_fill)
+        self.use_sarc = bool(use_sarc)
         stem_extra = 4 if self.decouple_env else self.extra_channels
+        if self.use_code_fill:
+            # CodeFilling-style codebook-guided sparse feature completion prior to UNet decoding
+            self.code_fill = nn.Sequential(
+                nn.Conv2d(self.feat_dim * GZ + 1, 64, 3, padding=1),
+                nn.GroupNorm(8, 64),
+                nn.GELU(),
+                nn.Conv2d(64, 64, 3, padding=2, dilation=2),
+                nn.GroupNorm(8, 64),
+                nn.GELU(),
+                nn.Conv2d(64, self.feat_dim * GZ, 1),
+            )
         self.stem = nn.Conv2d(self.feat_dim * GZ + stem_extra, 64, 3, padding=1)
         self.enc1 = ResBlock(64, use_norm=self.use_norm_pe)
         self.down1 = nn.Conv2d(64, 96, 3, stride=2, padding=1)
@@ -178,7 +217,21 @@ class ReceiverDecoder(nn.Module):
         self.dec2 = ResBlock(96, use_norm=self.use_norm_pe)
         self.up1 = nn.ConvTranspose2d(96, 64, 2, stride=2)
         self.dec1 = ResBlock(64, use_norm=self.use_norm_pe)
+        if self.use_sem_film and self.decouple_env:
+            # Zero-initialized FiLM gate injecting 25x25 z_max height prior into sem_head without early shortcutting
+            self.sem_film = nn.Sequential(
+                nn.Conv2d(1, 32, 3, padding=1),
+                nn.GroupNorm(8, 32),
+                nn.GELU(),
+                nn.Conv2d(32, 128, 1),
+            )
+            nn.init.zeros_(self.sem_film[-1].weight)
+            nn.init.zeros_(self.sem_film[-1].bias)
         self.sem_head = nn.Conv2d(64, N_CLASS * GZ, 1)
+        if self.use_sarc:
+            # Semantic Anchor Residual Connection (SARC): 13-scalar bounded logit skip from B4's
+            # explicit 4-bit wire class ID (0 extra wire bytes). Initialized to 4*sigmoid(0)=2.0.
+            self.sarc_gate = nn.Parameter(torch.zeros(N_CLASS))
         if self.decouple_env:
             env_ch = 4 if self.extra_channels >= 8 else 3
             self.vis_refine = nn.Sequential(
@@ -191,9 +244,13 @@ class ReceiverDecoder(nn.Module):
             )
         self.tri_head = nn.Conv2d(64, 3 * GZ, 1)
 
-    def forward(self, feat: torch.Tensor, extra: torch.Tensor) -> dict:
+    def forward(self, feat: torch.Tensor, extra: torch.Tensor, cls_prior: torch.Tensor | None = None) -> dict:
         batch = feat.shape[0]
         flat = feat.permute(0, 1, 4, 2, 3).reshape(batch, self.feat_dim * GZ, GX, GY)
+        if self.use_code_fill:
+            occ_mask = (flat.abs().sum(dim=1, keepdim=True) > 1e-6).to(flat.dtype)
+            filled = self.code_fill(torch.cat((flat, occ_mask), dim=1))
+            flat = torch.where(occ_mask > 0.5, flat, filled)
         if extra.ndim == 4:
             extra_map = extra
         elif extra.ndim == 3:
@@ -210,7 +267,21 @@ class ReceiverDecoder(nn.Module):
         coarse = self.attn(self.bottleneck(self.down2(skip2)))
         up2 = self.dec2(_match(self.up2(coarse), skip2) + skip2)
         up1 = self.dec1(_match(self.up1(up2), skip1) + skip1)
-        sem = self.sem_head(up1).reshape(batch, N_CLASS, GZ, GX, GY).permute(0, 1, 3, 4, 2)
+        if self.use_sem_film and self.decouple_env and self.extra_channels >= 8:
+            gb = self.sem_film(extra_map[:, 7:8])
+            gamma, beta = gb.chunk(2, dim=1)
+            sem_in = up1 * (1.0 + 0.5 * torch.tanh(gamma)) + 0.5 * beta
+        else:
+            sem_in = up1
+        sem = self.sem_head(sem_in).reshape(batch, N_CLASS, GZ, GX, GY).permute(0, 1, 3, 4, 2)
+        if self.use_sarc and cls_prior is not None:
+            if self.training:
+                keep = (torch.rand((batch, 1, GX, GY, GZ), device=cls_prior.device) > 0.25).to(cls_prior.dtype)
+                prior_use = cls_prior * keep
+            else:
+                prior_use = cls_prior
+            gate = (4.0 * torch.sigmoid(self.sarc_gate)).to(sem.dtype).view(1, N_CLASS, 1, 1, 1)
+            sem = sem + gate * prior_use.to(sem.dtype)
         if self.decouple_env:
             env_maps = (
                 torch.cat((extra_map[:, 0:3], extra_map[:, 7:8]), dim=1)

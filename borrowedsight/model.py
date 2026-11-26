@@ -111,6 +111,14 @@ class BorrowedSight(nn.Module):
         use_time_decay: bool = False,
         road_floor: float = 0.0,
         decouple_env: bool = False,
+        sender_norm_pe: bool = False,
+        sender_max_pool: bool = False,
+        use_sem_film: bool = False,
+        use_code_fill: bool = False,
+        fusion_mode: str = "mean",
+        softmax_temp: float = 4.0,
+        use_w2c_gate: bool = False,
+        use_sarc: bool = False,
     ):
         super().__init__()
         if method not in {"B0", "B1", "B2", "B3", "B4"}:
@@ -133,13 +141,28 @@ class BorrowedSight(nn.Module):
         self.use_time_decay = bool(use_time_decay)
         self.road_floor = float(road_floor)
         self.decouple_env = bool(decouple_env)
+        self.sender_norm_pe = bool(sender_norm_pe)
+        self.sender_max_pool = bool(sender_max_pool)
+        self.use_sem_film = bool(use_sem_film)
+        self.use_code_fill = bool(use_code_fill)
+        self.fusion_mode = str(fusion_mode)
+        self.softmax_temp = float(softmax_temp)
+        self.use_w2c_gate = bool(use_w2c_gate)
+        self.use_sarc = bool(use_sarc) if method == "B4" else False
         self.extra_channels = 8 if self.use_zmax_env else 7
-        self.encoder = SenderEncoder(feat_dim)
+        self.encoder = SenderEncoder(
+            feat_dim,
+            use_norm_pe=self.sender_norm_pe,
+            use_max_pool=self.sender_max_pool,
+        )
         self.decoder = ReceiverDecoder(
             feat_dim,
             extra_channels=self.extra_channels,
             use_norm_pe=self.use_norm_pe,
             decouple_env=self.decouple_env,
+            use_sem_film=self.use_sem_film,
+            use_code_fill=self.use_code_fill,
+            use_sarc=self.use_sarc,
         )
         self.fuse = nn.Sequential(
             nn.Linear(feat_dim + 6, feat_dim),
@@ -201,9 +224,42 @@ class BorrowedSight(nn.Module):
         feat = feat / weight.unsqueeze(1).clamp(min=1.0e-6)
         return feat, extra, nonempty
 
+    def build_cls_prior(self, placed, pose) -> torch.Tensor | None:
+        """Build [B, N_CLASS, GX, GY, GZ] normalized wire semantic class prior for SARC (B4 only)."""
+        if not self.use_sarc:
+            return None
+        from borrowedsight.grid import linear_index
+
+        batch = int(pose.shape[0])
+        n_vox = GX * GY * GZ
+        prior = pose.new_zeros(batch, N_CLASS, GX, GY, GZ, dtype=torch.float32)
+        for b, items in enumerate(placed):
+            vote = pose.new_zeros(N_CLASS, n_vox, dtype=torch.float32)
+            fresh = pose.new_zeros(n_vox, dtype=torch.float32)
+            has_any = False
+            for item in items:
+                cls = item.get("cls")
+                idx = item.get("coords_ego")
+                if cls is None or idx is None or idx.numel() == 0:
+                    continue
+                has_any = True
+                age = float(item.get("age", 0.0))
+                age_decay = float(np.exp(-age / 0.5)) if (self.use_time_decay and age > 0.0) else 1.0
+                w = item["conf"].to(torch.float32).clamp(min=1.0e-3) * age_decay
+                lin = linear_index(idx)
+                oh = F.one_hot(cls.to(torch.long).clamp(0, N_CLASS - 1), num_classes=N_CLASS).to(torch.float32)
+                vote.index_add_(1, lin, (oh * w.unsqueeze(1)).transpose(0, 1))
+                fresh.scatter_reduce_(0, lin, torch.full_like(w, age_decay), reduce="amax", include_self=True)
+            if has_any:
+                vsum = vote.sum(dim=0, keepdim=True)
+                normed = torch.where(vsum > 0, (vote / vsum.clamp(min=1.0e-6)) * fresh.unsqueeze(0), torch.zeros_like(vote))
+                prior[b] = normed.view(N_CLASS, GX, GY, GZ)
+        return prior
+
     def render(self, placed, pose, stamp, move) -> dict:
         feat, extra, nonempty = self.build_inputs(placed, pose, stamp, move)
-        pred = self.decoder(feat, extra)
+        cls_prior = self.build_cls_prior(placed, pose)
+        pred = self.decoder(feat, extra, cls_prior=cls_prior)
         return _force_unknown_where(pred, torch.logical_not(nonempty))
 
     def transmit(
@@ -241,9 +297,13 @@ class BorrowedSight(nn.Module):
         fused_k = fused[chosen]
         class_k = classes[chosen]
         coords = cached["coords"][chosen]
-        recon, wire, codes, vq_loss = self._represent(fused_k, class_k, stage_n)
+        gate_k = torch.sigmoid(logits[chosen]) if chosen.numel() else fused.new_zeros(0)
+        recon, wire, codes, vq_loss = self._represent(fused_k, class_k, stage_n, gate=gate_k)
         code_l0 = None if codes is None else codes[:, 0]
-        conf = torch.sigmoid(logits[chosen].detach()).clamp(0, 1) if chosen.numel() else fused.new_zeros(0)
+        if self.method == "B2" and self.use_w2c_gate:
+            conf = recon.detach().norm(dim=-1).clamp(min=1.0e-3) if chosen.numel() else fused.new_zeros(0)
+        else:
+            conf = gate_k.detach().clamp(0, 1) if chosen.numel() else fused.new_zeros(0)
         if self.use_envelope:
             if self.envelope_cells == 50 and cached.get("envelope50") is not None:
                 envelope = pack_hybrid_env50(cached["envelope50"], cached.get("envelope25"))
@@ -307,19 +367,25 @@ class BorrowedSight(nn.Module):
         )[0].to(torch.float32)
         values = sent["recon"]
         conf = sent["conf"]
+        cls_t = sent.get("classes") if self.method == "B4" else None
         if coords.numel() == 0:
             ego_idx = torch.zeros(0, 3, dtype=torch.long, device=device)
+            if cls_t is not None:
+                cls_t = torch.zeros(0, dtype=torch.long, device=device)
         else:
             centers = coords_to_ego(coords, sender_np, ego_np)
             ego_idx, valid = voxel_index_torch(centers)
             ego_idx = ego_idx[valid]
             values = values[valid]
             conf = conf[valid]
+            if cls_t is not None:
+                cls_t = cls_t[valid]
         age = abs(float(sent.get("timestamp", ego_time)) - float(ego_time))
         return {
             "values": values,
             "coords_ego": ego_idx,
             "conf": conf,
+            "cls": cls_t,
             "envelope": sent.get("envelope"),
             "sender_pose": sender_np,
             "ego_pose": ego_np,
@@ -327,7 +393,7 @@ class BorrowedSight(nn.Module):
             "age": age,
         }
 
-    def _represent(self, fused: torch.Tensor, classes: torch.Tensor, stage: int):
+    def _represent(self, fused: torch.Tensor, classes: torch.Tensor, stage: int, gate: torch.Tensor | None = None):
         if fused.numel() == 0:
             empty = fused.reshape(0, self.feat_dim)
             return empty, empty, None, fused.new_zeros(())
@@ -335,7 +401,10 @@ class BorrowedSight(nn.Module):
             wire = fp16_ste(fused)
             return wire, wire, None, fused.new_zeros(())
         if self.method == "B2":
-            thin = fp16_ste(self.proj(fused))
+            projected = self.proj(fused)
+            if self.use_w2c_gate and gate is not None:
+                projected = projected * gate.unsqueeze(-1).to(projected.dtype)
+            thin = fp16_ste(projected)
             return self.lift(thin), thin, None, fused.new_zeros(())
         if self.method == "B3":
             recon, codes, loss = _quantize_book(self.quant, fused, stage)
@@ -364,41 +433,65 @@ class BorrowedSight(nn.Module):
     def _quantize_grouped(self, fused: torch.Tensor, classes: torch.Tensor, stage: int):
         stage_n = max(1, min(int(stage), 2))
         groups = self.group_table[classes.clamp(0, N_CLASS - 1)]
+        n = int(fused.shape[0])
+        n_grp = len(self.books)
+        valid = groups >= 0
+        valid_f = valid.unsqueeze(-1).to(torch.float32)
+        safe_g = groups.clamp(0, n_grp - 1)
+        residual = fused.float()
+        recon_f = torch.zeros_like(residual)
+        row_idx = torch.arange(n, device=fused.device)
+        all_codes = []
+
         if not self.training and not torch.is_grad_enabled():
-            n = int(fused.shape[0])
-            valid = groups >= 0
-            safe_g = groups.clamp(0, len(self.books) - 1)
-            residual = fused.float()
-            recon_f = torch.zeros_like(residual)
-            row_idx = torch.arange(n, device=fused.device)
-            all_codes = []
             for q_idx in range(stage_n):
-                cb = torch.stack([book.layers[q_idx].codebook for book in self.books], dim=0)
-                cb_tok = cb[safe_g]
-                idx = torch.cdist(residual.unsqueeze(1), cb_tok).squeeze(1).argmin(dim=-1)
-                q = cb_tok[row_idx, idx] * valid.unsqueeze(-1).to(residual.dtype)
+                cb_all = torch.stack([book.layers[q_idx].codebook for book in self.books], dim=0)  # [G, K, D]
+                cb_n2 = (cb_all * cb_all).sum(dim=-1)  # [G, K]
+                dots = (residual @ cb_all.reshape(-1, residual.shape[-1]).T).view(n, n_grp, -1)
+                idx = (cb_n2[safe_g] - 2.0 * dots[row_idx, safe_g]).argmin(dim=-1)
+                q = cb_all[safe_g, idx] * valid_f
                 residual = residual - q
                 recon_f = recon_f + q
                 all_codes.append(torch.where(valid, idx, torch.full_like(idx, 255)))
             return recon_f.to(fused.dtype), torch.stack(all_codes, dim=-1), fused.new_zeros(())
-        recon = fused.new_zeros(fused.shape[0], self.feat_dim)
-        codes = torch.full((fused.shape[0], stage_n), 255, dtype=torch.long, device=fused.device)
-        loss = fused.new_zeros(())
-        used = 0
-        for group_id, book in enumerate(self.books):
-            mask = groups == group_id
-            if not bool(mask.any().item()):
-                continue
-            part, part_codes, part_loss = _quantize_book(book, fused[mask], stage_n)
-            recon[mask] = part
-            codes[mask] = part_codes
-            loss = loss + part_loss
-            used += 1
-        if used:
-            loss = loss / used
-        return recon, codes, loss
 
-    def _placed_from_blob(self, blob: bytes, ego_pose, ego_time: float) -> dict:
+        # Zero-sync vectorized grouped ResidualSimVQ training (100% bit-exact parity with per-group loop,
+        # eliminating GPU->CPU synchronization stalls from boolean mask indexing and .any().item()).
+        from vector_quantize_pytorch.sim_vq import rotate_to
+
+        all_losses = []
+        cw = float(self.books[0].layers[0].commitment_weight)
+        icw = float(self.books[0].layers[0].input_to_quantize_commit_loss_weight)
+        valid_1d = valid.to(torch.float32)
+        for q_idx in range(stage_n):
+            cb_all = torch.stack([book.layers[q_idx].codebook for book in self.books], dim=0)  # [G, K, D]
+            with torch.no_grad():
+                cb_n2 = (cb_all * cb_all).sum(dim=-1)  # [G, K]
+                dots = (residual @ cb_all.reshape(-1, residual.shape[-1]).T).view(n, n_grp, -1)
+                idx = (cb_n2[safe_g] - 2.0 * dots[row_idx, safe_g]).argmin(dim=-1)
+            q_raw = cb_all[safe_g, idx]
+            tok_err = (
+                (residual.detach() - q_raw).pow(2).mean(dim=-1)
+                + (residual - q_raw.detach()).pow(2).mean(dim=-1) * icw
+            ) * valid_1d
+            g_sum = residual.new_zeros(n_grp).scatter_add_(0, safe_g, tok_err)
+            g_cnt = residual.new_zeros(n_grp).scatter_add_(0, safe_g, valid_1d)
+            g_has = (g_cnt > 0).to(torch.float32)
+            q_loss = ((g_sum / g_cnt.clamp(min=1.0)) * g_has).sum() / g_has.sum().clamp(min=1.0) * cw
+            q_rot = rotate_to(residual.unsqueeze(0), q_raw.unsqueeze(0)).squeeze(0) * valid_f
+            residual = residual - q_rot.detach()
+            recon_f = recon_f + q_rot
+            all_codes.append(torch.where(valid, idx, torch.full_like(idx, 255)))
+            all_losses.append(q_loss)
+        return recon_f.to(fused.dtype), torch.stack(all_codes, dim=-1), torch.stack(all_losses).mean()
+
+    def _placed_from_blob(
+        self,
+        blob: bytes,
+        ego_pose,
+        ego_time: float,
+        prev_packets_veh_w: list[tuple[np.ndarray, float]] | None = None,
+    ) -> dict:
         view = unpack_bytes(blob)
         from borrowedsight.codec import decode_tokens, demorton3
 
@@ -408,19 +501,44 @@ class BorrowedSight(nn.Module):
         morton = tokens["morton"]
         ego_np = ego_pose.detach().cpu().numpy() if torch.is_tensor(ego_pose) else np.asarray(ego_pose, dtype=np.float32)
         sender_np = np.asarray(view["pose"], dtype=np.float32)
+        age = abs(float(view["timestamp_s"]) - float(ego_time))
         if morton.size == 0:
             coords = torch.zeros(0, 3, dtype=torch.long, device=ego_pose.device)
             values = ego_pose.new_zeros(0, self.feat_dim)
             conf = ego_pose.new_zeros(0)
+            cls_t = torch.zeros(0, dtype=torch.long, device=ego_pose.device) if view["method"] == "B4" else None
         else:
             coords_np = demorton3(morton)
-            coords_s = torch.as_tensor(coords_np, dtype=torch.long, device=ego_pose.device)
-            centers = coords_to_ego(coords_s, sender_np, ego_np)
+            if (
+                prev_packets_veh_w
+                and age > 1.0e-3
+                and view["method"] == "B4"
+                and "cls" in tokens
+            ):
+                from borrowedsight.kinematics import warp_tokens_ss_kfw
+
+                centers_np, _ = warp_tokens_ss_kfw(
+                    coords_np,
+                    tokens["cls"],
+                    sender_np,
+                    ego_np,
+                    dt_delay=age,
+                    prev_packets_veh_w=prev_packets_veh_w,
+                )
+                centers = torch.as_tensor(centers_np, dtype=torch.float32, device=ego_pose.device)
+            else:
+                coords_s = torch.as_tensor(coords_np, dtype=torch.long, device=ego_pose.device)
+                centers = coords_to_ego(coords_s, sender_np, ego_np)
             idx, valid = voxel_index_torch(centers)
             values, conf = self._tensor_from_tokens(tokens, stage)
             coords = idx[valid]
             values = values[valid]
             conf = conf[valid]
+            cls_t = (
+                torch.as_tensor(np.asarray(tokens["cls"], dtype=np.int64), device=ego_pose.device)[valid]
+                if (view["method"] == "B4" and "cls" in tokens)
+                else None
+            )
         origin = transform_points_torch(
             torch.zeros(1, 3, device=ego_pose.device, dtype=torch.float64), sender_np, ego_np
         )[0].to(torch.float32)
@@ -428,19 +546,25 @@ class BorrowedSight(nn.Module):
             "values": values,
             "coords_ego": coords,
             "conf": conf,
+            "cls": cls_t,
             "envelope": view["envelope"] if view["flags"] % 2 == 1 else None,
             "sender_pose": sender_np,
             "ego_pose": ego_np,
             "origin_ego": origin,
-            "age": abs(float(view["timestamp_s"]) - float(ego_time)),
+            "age": age,
         }
 
     def _tensor_from_tokens(self, tokens: dict, stage: int):
         device = self.group_table.device
-        if self.method in {"B1", "B2"}:
+        if self.method == "B2":
             raw = torch.as_tensor(np.asarray(tokens["feat"], dtype=np.float32), device=device)
-            if self.method == "B2":
-                raw = self.lift(raw)
+            raw = self.lift(raw)
+            if self.use_w2c_gate:
+                conf = raw.detach().norm(dim=-1).clamp(min=1.0e-3)
+                return raw, conf
+            return raw, torch.ones(raw.shape[0], device=device)
+        if self.method == "B1":
+            raw = torch.as_tensor(np.asarray(tokens["feat"], dtype=np.float32), device=device)
             return raw, torch.ones(raw.shape[0], device=device)
         code0 = torch.as_tensor(np.asarray(tokens["code"], dtype=np.int64), device=device)
         if int(stage) > 1 and "code2" in tokens:
@@ -494,6 +618,10 @@ class BorrowedSight(nn.Module):
             w = item["conf"].clamp(min=1.0e-3)
             if self.use_time_decay and age > 0.0:
                 w = w * float(np.exp(-age / 0.5))
+            if self.fusion_mode == "softmax":
+                # Temperature-scaled exponential competition across overlapping senders at the same voxel:
+                # sharply favors fresher, higher-confidence observations under pose/latency perturbations.
+                w = torch.exp((w * float(self.softmax_temp)).clamp(max=12.0))
             scatter_values(feat, weight, item["coords_ego"], item["values"], w)
             self._carve(extra, item, env_free_ego=env_free_ego)
         age_value = min(age, 1.0) if self.use_time_decay else (min(age, 5.0) / 5.0)

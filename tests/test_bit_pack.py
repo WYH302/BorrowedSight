@@ -504,3 +504,105 @@ def test_v2_compact_wire_true_residual_env50_and_losses():
     extra = torch.randn(2, 8, 10, 10)
     f2, e2, s2, t2 = bev_d4_augment(feat, extra, sem_t, tri_t, np.random.default_rng(0))
     assert f2.shape == feat.shape and e2.shape == extra.shape and s2.shape == sem_t.shape and t2.shape == tri_t.shape
+
+
+def test_v3_k64_sender_ss_kfw_and_sota_baselines():
+    """Verify BorrowedSight v3.0 upgrades: SenderEncoder v3 7-ch D4 pooling, K=64 6-bit wire parity,
+    SS-KFW zero-byte kinematic warping (moving vehicle shifts, static stays locked),
+    Where2comm-Occ, CodeFilling-Occ, TDVF Zero-Init FiLM, and Softmax multi-sender fusion."""
+    import torch
+    from borrowedsight.kinematics import warp_tokens_ss_kfw
+    from borrowedsight.model import BorrowedSight
+    from borrowedsight.nets import SenderEncoder
+    from tools.train_sender_v3 import apply_d4_pooled_and_target
+
+    # 1. SenderEncoder v3 7-ch D4-equivariant pooling & exact symmetry alignment
+    enc_v3 = SenderEncoder(feat_dim=16, use_norm_pe=True, use_max_pool=True).eval()
+    pts = torch.tensor([[[1.2, -3.4, 0.5], [1.3, -3.3, 0.8], [-5.0, 2.0, -0.2]]], dtype=torch.float32)
+    msk = torch.ones(1, 3, dtype=torch.bool)
+    with torch.no_grad():
+        pooled = enc_v3._pool(pts, msk)
+        assert pooled.shape == (1, 7, 8, 100, 100)
+        tgt = torch.zeros(1, 100, 100, 8, dtype=torch.long)
+        nz = (pooled[0, 6] > 0).nonzero()
+        for row in nz:
+            tgt[0, row[1], row[2], row[0]] = 10
+        p_aug, t_aug = apply_d4_pooled_and_target(pooled, tgt, np.random.default_rng(42))
+        assert torch.equal((p_aug[0, 6] > 0).permute(1, 2, 0), t_aug[0] == 10)
+        out_enc = enc_v3.forward_from_pooled(p_aug)
+        assert out_enc["feat"].shape == (1, 16, 100, 100, 8) and out_enc["sem"].shape == (1, 13, 100, 100, 8)
+
+    # 2. K=64 wire parity for B4-v3, CodeFilling-Occ (B3), and Where2comm-Occ (B2)
+    coords = torch.tensor([[10, 20, 2], [30, 40, 3], [50, 60, 1], [70, 80, 4]], dtype=torch.long)
+    ego_pose = torch.zeros(1, 6, dtype=torch.float32)
+    cached = {
+        "sender_id": 1,
+        "timestamp": 0.0,
+        "pose": np.zeros(6, dtype=np.float32),
+        "speed": 5.0,
+        "yaw_rate": 0.0,
+        "coords": coords,
+        "feats": torch.randn(4, 16),
+        "geo": torch.randn(4, 6),
+        "pred_class": torch.tensor([1, 2, 7, 10], dtype=torch.long),
+        "envelope50": np.zeros(939, dtype=np.uint8),
+        "envelope25": np.zeros(625, dtype=np.uint8),
+    }
+    for name, method, kw in [
+        (
+            "B4-v3-K64",
+            "B4",
+            dict(
+                codebook_size=64,
+                compact_wire=True,
+                true_residual=True,
+                use_zmax_env=True,
+                envelope_cells=50,
+                use_norm_pe=True,
+                decouple_env=True,
+                use_sem_film=True,
+                use_sarc=True,
+                fusion_mode="softmax",
+            ),
+        ),
+        (
+            "CodeFilling-Occ-K64",
+            "B3",
+            dict(codebook_size=64, compact_wire=True, use_norm_pe=True, use_code_fill=True, use_envelope=False),
+        ),
+        (
+            "Where2comm-Occ",
+            "B2",
+            dict(use_norm_pe=True, use_w2c_gate=True, use_envelope=False),
+        ),
+    ]:
+        mod = BorrowedSight(method, **kw).eval()
+        bgt = packet_layout(method, TARGET_BYTES, stage=2, include_envelope=(method == "B4"), compact=(method in {"B3", "B4"}))
+        with torch.no_grad():
+            sent = mod.transmit(cached, ego_pose[0], receiver_id=0, n_tokens=bgt["n_tokens"], stage=2, budget=bgt, serialize=True)
+            assert len(sent["blob"]) == TARGET_BYTES, name
+            p_tx = mod.placed_from_transmit(sent, ego_pose[0], 0.0)
+            out_tx = mod.render([[p_tx]], ego_pose, torch.zeros(1), torch.zeros(1, 2))
+            out_rx = mod(ego_pose, torch.zeros(1), torch.zeros(1, 2), [[sent["blob"]]])
+            assert torch.allclose(out_tx["sem"], out_rx["sem"], atol=1e-4), name
+            assert torch.allclose(out_tx["tri"], out_rx["tri"], atol=1e-4), name
+
+    # 3. SS-KFW selective warping: moving VEHICLE warps by v * dt, static ROAD stays locked!
+    from borrowedsight.kinematics import sender_coords_to_world
+    from borrowedsight.labels import ROAD, VEHICLE
+
+    pose0 = np.zeros(6, dtype=np.float32)
+    coords_s = np.array([[50, 50, 2], [51, 50, 2], [20, 20, 1]], dtype=np.int64)
+    cls_arr = np.array([VEHICLE, VEHICLE, ROAD], dtype=np.int64)
+
+    curr_w = sender_coords_to_world(coords_s, pose0)
+    prev_veh_w = curr_w[:2].copy()
+    prev_veh_w[:, 0] -= 2.0  # moved +2.0 m in 0.2 s -> vx = +10.0 m/s
+    warped, speeds = warp_tokens_ss_kfw(
+        coords_s, cls_arr, pose0, pose0, dt_delay=0.5, prev_packets_veh_w=[(prev_veh_w, 0.2)]
+    )
+    assert len(speeds) == 1 and abs(speeds[0] - 10.0) < 1e-3
+    # Vehicle tokens shifted by +5.0 m in x, road token shifted by 0.0 m
+    assert abs((warped[0, 0] - curr_w[0, 0]) - 5.0) < 1e-3
+    assert abs((warped[1, 0] - curr_w[1, 0]) - 5.0) < 1e-3
+    assert np.allclose(warped[2], curr_w[2], atol=1e-5)

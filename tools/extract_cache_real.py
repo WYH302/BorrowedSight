@@ -238,20 +238,30 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--train-stride", type=int, default=1)
     ap.add_argument("--eval-stride", type=int, default=1)
+    ap.add_argument("--sender-ckpt", type=str, default="sender_opv2v.pt")
+    ap.add_argument("--cache-prefix", type=str, default="opv2v")
     args = ap.parse_args()
 
     with (CONFIGS / "train.yaml").open("r", encoding="utf-8") as h:
         cfg = yaml.safe_load(h)
     device = torch.device("cuda")
-    model = BorrowedSight("B1", feat_dim=int(cfg["feat_dim"]), codebook_size=int(cfg["codebook_size"])).to(device)
-    ckpt = torch.load(CHECKPOINTS / "sender_opv2v.pt", map_location=device, weights_only=False)
+    ckpt = torch.load(CHECKPOINTS / args.sender_ckpt, map_location=device, weights_only=False)
+    enc_kw = ckpt.get("encoder_kwargs", {})
+    model = BorrowedSight(
+        "B1",
+        feat_dim=int(enc_kw.get("feat_dim", cfg["feat_dim"])),
+        codebook_size=int(cfg["codebook_size"]),
+        sender_norm_pe=bool(enc_kw.get("use_norm_pe", False)),
+        sender_max_pool=bool(enc_kw.get("use_max_pool", False)),
+    ).to(device)
     model.encoder.load_state_dict(ckpt["encoder"])
     model.eval()
 
+    prefix = str(args.cache_prefix)
     total_cache_bytes = 0
     # Clear caches: train, validate, test
     for split, st in (("train", args.train_stride), ("validate", args.eval_stride), ("test", args.eval_stride)):
-        m = extract_split(model, split, "clear", CACHE_ROOT / "opv2v_clear" / split, device, stride=st, seed=0)
+        m = extract_split(model, split, "clear", CACHE_ROOT / f"{prefix}_clear" / split, device, stride=st, seed=0)
         total_cache_bytes += m["bytes"]
     # Disjoint LISA test weather caches: validate & test ONLY (never train!)
     for mode, sd in (("fog", 101), ("rain", 202)):
@@ -260,14 +270,14 @@ def main() -> None:
                 model,
                 split,
                 mode,
-                CACHE_ROOT / f"opv2v_lisa_{mode}" / split,
+                CACHE_ROOT / f"{prefix}_lisa_{mode}" / split,
                 device,
                 stride=args.eval_stride,
                 seed=sd,
             )
             total_cache_bytes += m["bytes"]
 
-    print(f"TOTAL OPV2V SPARSE CACHE SIZE: {total_cache_bytes / 1e9:.3f} GB (cap 80 GB)", flush=True)
+    print(f"TOTAL {prefix.upper()} SPARSE CACHE SIZE: {total_cache_bytes / 1e9:.3f} GB (cap 80 GB)", flush=True)
     if total_cache_bytes > 80 * 1024**3:
         raise SystemExit("Cache exceeded 80GB cap!")
 

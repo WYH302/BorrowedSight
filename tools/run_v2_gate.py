@@ -89,6 +89,8 @@ def _drop_placed_tokens(item: dict, drop_p: float, rng: np.random.Generator) -> 
     out["coords_ego"] = coords[mask]
     out["values"] = item["values"][mask]
     out["conf"] = item["conf"][mask]
+    if item.get("cls") is not None:
+        out["cls"] = item["cls"][mask]
     return out
 
 

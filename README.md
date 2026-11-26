@@ -16,40 +16,47 @@
 
 **BorrowedSight** is a lightweight, pure-PyTorch cooperative 3D semantic occupancy framework built for vehicles with **zero onboard environmental sensors** (no ego camera, LiDAR, or radar), relying strictly on 6-DoF localization and bandwidth-constrained V2X packets from LiDAR-equipped neighbors.
 
-Rather than inflating neural backbones, BorrowedSight redesigns what information enters every wire bit under compact `2.34M–2.42M`-parameter (`15.22–16.70 GFLOPs`) encoder/decoder capacity:
+Rather than inflating neural backbones, BorrowedSight redesigns what information enters every wire bit under compact `2.42M`-parameter (`16.71 GFLOPs`) encoder/decoder capacity—**43,939 fewer parameters and 0.90 fewer GFLOPs than equal-byte CodeFilling-Occ**:
 
 - **Strict Zero-Ego Receiver Boundary:** Receiver inference accepts strictly `(ego_pose, timestamp, motion, serialized_packets)` and is verified by a 6-check automated leakage audit. Complete V2X link outage deterministically falls back to `100% Unknown` (`UFE = 0.0`).
-- **Zero-Waste 5-Byte Additive Category-Geometry VQ Coding:** Packs every anchor into an exact **40-bit (5 B)** record—`17b coord + 4b class ID + 6b code1 + 6b code2 + 7b conf` (`0` wasted bits)—making Stage-2 residual refinement free in packet bytes while decoding additively as $\mathbf{E}_{\mathrm{cls}}(c_u) + \mathrm{VQ}_{g(c_u)}(q_u^{(1)}, q_u^{(2)})$ across three geometry-specialized `ResidualSimVQ(rotation_trick=True)` codebooks (*Things*, *Ground*, *Vertical Static*) with category-balanced quotas (`+1,232` total parameters / `+0.053%` over compact 4-byte shared VQ for `B4-Compact`).
-- **Loss-Resilient Micro-Blocks, Adaptive `50×50` Zstd Envelopes, and TDVF:** Packs anchors into self-contained 16-token Morton micro-blocks alongside a fixed 512 B Zstandard slot that adaptively compresses `50×50` (`0.8 m`) visibility bit-planes plus `25×25` max-height priors across **100%** of all 4,736 real OPV2V sweeps (`295–509 B`, mean `433.5 B`, `0` extra wire bytes). **Task-Decoupled Visibility Fusion (TDVF)** routes backward-warped visibility exclusively into a late-fusion tri-state refinement branch, eliminating geometric shortcut overfitting (`+1.39` mIoU pts and `-20.6%` UFE vs. early shared-stem fusion).
-- **IoU/Safety-Aligned Multi-Budget Training & Real-Time Deployment:** Combines masked Lovász-Softmax, asymmetric blind-zone free-space penalties, `8× D4` BEV augmentation, and randomized `4–32 KB` training while running end-to-end serialized pure-PyTorch inference at **`10.57–11.90 ms` (`84.0–94.6 FPS`)** for 1 sender and **`34.53–39.19 ms` (`25.5–29.0 FPS`)** for 4 simultaneous senders within **`170.5 MB`** peak VRAM on one RTX 3090 (zero `spconv` or `mmcv` dependencies).
+- **Explicit 4-Bit Wire Semantics Unlocking Three Zero-Extra-Byte Receiver Mechanisms:** Every anchor packs losslessly into an exact **5-byte (40-bit)** record—`17b coord + 4b class ID + 6b code1 + 6b code2 + 7b conf` (`0` wasted bits)—unlocking:
+  1. **Additive $3\times 64$ Category-Geometry ResidualSimVQ (`+E_cls`):** Full 6-bit codebook capacity (`K=64`, zero extra trainable parameters) across *Things* (`Vehicles, TrafficSign`), *Ground* (`Terrain, Road, SideWalk`), and *Vertical Static* (`Building, Fence, Pole, Vegetation, Wall, GuardRail, Bridge`), reaching **98.4% (63/64)** Stage-2 Vertical Static utilization and `149/192 (77.6%)` total active prototypes.
+  2. **Semantic Anchor Residual Connection (`SARC`, `+13` scalar parameters, `0` extra wire bytes):** Confidence- and freshness-weighted wire class voting directly reinforcing 3D semantic logits, lifting held-out Building IoU by **`+18.69 pt`** (`0.2130 → 0.3999`, 3-seed **`0.4338`**) and overall Test mIoU by **`+2.29 pt`**.
+  3. **Semantic-Selective Kinematic Forward Warping (`SS-KFW`, `0` parameters, `0` extra wire bytes):** Receiver-side 8-connected BEV clustering over wire-tagged `Vehicles` anchors estimates multi-step world velocities to warp moving traffic forward while locking static structures to exact world $\mathrm{SE}(3)$, boosting 500 ms delayed Vehicle IoU by **`3.49×`** (`0.0571 → 0.1994`, **`3.67×`** CodeFilling-Occ).
+- **Loss-Resilient Micro-Blocks, Adaptive `50×50` Zstd Envelopes, and TDVF:** Self-contained 16-token Morton micro-blocks isolate wireless drops alongside a fixed 512 B Zstandard slot fitting `50×50` (`0.8 m`) visibility envelopes across **100.0%** of all 4,736 real OPV2V sweeps (`295–509 B`) and **100.0%** of all **2,306 real-world 32-beam V2V4Real sweeps** (`0.0%` overflow, Tier-2 max `475 B ≤ 510 B`). **Task-Decoupled Visibility Fusion (TDVF)** isolates visibility exclusively inside a late-fusion tri-state refinement head (`+2.92 pt` Test mIoU vs. early stem concatenation).
+- **Real-Time Pure-PyTorch Deployment (Zero `spconv`/`mmcv`):** Single-GEMM zero-sync quantization (`6.73×` speedup) and vectorized packing achieve **`12.68 ms` (`78.8 FPS`)** for 1 sender and **`41.88 ms` (`23.9 FPS`)** for 4 simultaneous senders in FP32 (`13.53–43.28 ms` BF16) within **`137.8 MB`** peak VRAM on one RTX 3090.
 
-### Key Measured Results (25-Scene Multi-Sender Real OPV2V & Mini-200, 0.0% Byte Discrepancy)
+### Key Measured Results (25-Scene Real OPV2V, Real-World V2V4Real, and Mini-200, 0.0% Byte Discrepancy)
 
-| Benchmark (Packet Budget) | Method | Bytes / Pkt | mIoU $\uparrow$ | Vehicle IoU $\uparrow$ | Road IoU $\uparrow$ | Unknown F1 $\uparrow$ | UFE $\downarrow$ |
-| :--- | :--- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Real OPV2V Test (32 KB, 726 frames) | B0 (No Comm) | 0 | 0.0000 | 0.0000 | 0.0000 | 0.7755 | 0.0000 |
-| Real OPV2V Test (32 KB) | B1 (Sparse FP16, 36 B) | 32,768 | 0.2732 | 0.3271 | 0.5980 | 0.8788 | 0.0703 |
-| Real OPV2V Test (32 KB) | B2 (Cont. 8-d, 20 B) | 32,768 | 0.3640 | 0.4766 | 0.6054 | **0.9113** | 0.0513 |
-| Real OPV2V Test (32 KB, 3-seed) | B3 (Compact 4B VQ) | 32,768 | 0.4044 ± 0.0080 | 0.4809 ± 0.0017 | **0.7359 ± 0.0002** | 0.9098 ± 0.0041 | 0.0378 ± 0.0014 |
-| **Real OPV2V Test (32 KB, 3-seed)** | **B4-TDVF (5B + 50×50)** | **32,768** | **0.4168 ± 0.0043** | **0.4865 ± 0.0024** | 0.7075 ± 0.0033 | 0.9071 ± 0.0029 | **0.0364 ± 0.0047** |
-| **Real OPV2V Test (32 KB, 3-seed)** | **B4-Compact (5B S2)** | **32,768** | **0.4255 ± 0.0065** | 0.4800 ± 0.0061 | 0.7072 ± 0.0114 | 0.9102 ± 0.0012 | 0.0368 ± 0.0009 |
-| Real OPV2V Test (16 KB, 3-seed) | B3 (Compact 4B VQ) | 16,384 | 0.3902 ± 0.0071 | 0.4784 ± 0.0039 | **0.6884 ± 0.0064** | 0.9083 ± 0.0036 | **0.0364 ± 0.0048** |
-| **Real OPV2V Test (16 KB, 3-seed)** | **B4-TDVF (5B + 50×50)** | **16,384** | **0.4067 ± 0.0093** | **0.4861 ± 0.0053** | 0.6644 ± 0.0051 | **0.9098 ± 0.0024** | 0.0446 ± 0.0023 |
-| **Real OPV2V Test (8 KB / 0.66 Mbps)** | **B4-TDVF-MultiBW** | **8,192** | **0.3702** | **0.4735** | **0.5934** | **0.9070** | **0.0445** |
-| **Real OPV2V Test (4 KB / 0.33 Mbps)** | **B4-TDVF-MultiBW** | **4,096** | **0.3250** | **0.4010** | **0.5356** | **0.8997** | **0.0488** |
-| Scene-Grouped 5-Fold CV (25 Scenes, 32 KB, 8B) | B3 vs. **B4** | 32,768 | 0.3383 vs. **0.3625** ($p=0.0430$) | 0.4447 vs. **0.4538** | 0.6527 vs. **0.6653** | 0.8811 vs. 0.8691 | 0.0990 vs. **0.0969** |
-| Scene-Grouped 5-Fold CV (25 Scenes, 16 KB, 8B) | B3 vs. **B4** | 16,384 | 0.3064 vs. **0.3380** ($p=0.0023$) | 0.4398 vs. **0.4580** | 0.5701 vs. **0.5985** | 0.8724 vs. **0.8795** | 0.1061 vs. **0.1042** |
-| Mini-200 3-Sender (16 KB, seed 0) | B3 vs. **B4** | 16,384 | 0.3067 vs. **0.5814** | 0.1549 vs. **0.6078** | 0.5374 vs. **0.6407** | 0.9657 vs. **0.9725** | 0.0184 vs. 0.0222 |
+| Benchmark (Packet Budget) | Method | Bytes / Pkt | mIoU $\uparrow$ | Fg-mIoU $\uparrow$ | Vehicle IoU $\uparrow$ | Building IoU $\uparrow$ | Unknown F1 $\uparrow$ | UFE $\downarrow$ |
+| :--- | :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Real OPV2V Test (32 KB, 726 frames) | B0 (No Comm) | 0 | 0.0000 | 0.0000 | 0.0000 | 0.0000 | 0.7755 | 0.0000 |
+| Real OPV2V Test (32 KB) | B1 (Sparse FP16, 36 B) | 32,768 | 0.2650 | 0.2293 | 0.3268 | 0.0140 | 0.8868 | 0.0599 |
+| Real OPV2V Test (32 KB, 3-seed) | Where2comm-Occ (20 B) | 32,768 | 0.3937 ± 0.0178 | 0.3648 ± 0.0193 | 0.4789 ± 0.0025 | 0.3162 ± 0.0390 | 0.9068 ± 0.0010 | 0.0506 ± 0.0020 |
+| Real OPV2V Test (32 KB) | B2 (Cont. 8-d, 20 B) | 32,768 | 0.3997 | 0.3717 | 0.4767 | 0.3163 | 0.9077 | 0.0479 |
+| Real OPV2V Test (32 KB, 3-seed) | B3-VQ (Shared 5B) | 32,768 | 0.4185 ± 0.0042 | 0.3926 ± 0.0038 | 0.4773 ± 0.0017 | 0.2606 ± 0.0842 | 0.9079 ± 0.0019 | **0.0427 ± 0.0028** |
+| Real OPV2V Test (32 KB, 3-seed) | CodeFilling-Occ (5B) | 32,768 | 0.4292 ± 0.0095 | 0.4027 ± 0.0104 | 0.4783 ± 0.0057 | 0.2619 ± 0.0496 | **0.9109 ± 0.0007** | 0.0443 ± 0.0007 |
+| **Real OPV2V Test (32 KB, 3-seed)** | **BorrowedSight v3 (5B+50×50)** | **32,768** | **0.4496 ± 0.0033** | **0.4252 ± 0.0034** | **0.4872 ± 0.0069** | **0.4338 ± 0.0397** | 0.9095 ± 0.0024 | 0.0474 ± 0.0015 |
+| Real OPV2V Test (16 KB, 3-seed) | CodeFilling-Occ (5B) | 16,384 | 0.4010 ± 0.0068 | 0.3735 ± 0.0075 | 0.4788 ± 0.0027 | 0.2593 ± 0.0981 | 0.9051 ± 0.0029 | 0.0508 ± 0.0028 |
+| Real OPV2V Test (16 KB, 3-seed) | B3-VQ (Shared 5B) | 16,384 | 0.4163 ± 0.0016 | 0.3896 ± 0.0028 | 0.4757 ± 0.0062 | 0.2956 ± 0.0388 | **0.9073 ± 0.0041** | 0.0490 ± 0.0043 |
+| **Real OPV2V Test (16 KB, 3-seed)** | **BorrowedSight v3 (5B+50×50)** | **16,384** | **0.4214 ± 0.0125** | **0.3958 ± 0.0142** | **0.4914 ± 0.0030** | **0.3098 ± 0.0737** | 0.9067 ± 0.0014 | **0.0474 ± 0.0041** |
+| **Real OPV2V Test (8 KB / 0.66 Mbps)** | **B4-MultiBW v3** | **8,192** | **0.3949** | -- | **0.4810** | -- | 0.9032 | 0.0506 |
+| **Real OPV2V Test (2 KB / 0.16 Mbps)** | **B4-MultiBW v3** | **2,048** | **0.2886** | -- | **0.2393** | -- | **0.8976** | 0.0549 |
+| **Real OPV2V 500 ms Latency (0 Extra B)** | **BorrowedSight v3 + SS-KFW** | **32,768** | **0.3718** | -- | **0.1994** (**3.49×**) | -- | 0.9061 | 0.0552 |
+| **V2V4Real Zero-Shot (8 KB, 316 frames)** | **B4-MultiBW v3 (Free IoU / Unk F1 / 3D Veh)** | **8,192** | **0.4347** (Tri) | **0.5524** (Free) | **0.3632** (3D Rec) | -- | **0.7480** | 0.1469 |
+| Sync. v3.0 5-Fold CV (25 Scenes, 32 KB, 5B) | B3-VQ vs. **BorrowedSight v3** | 32,768 | 0.3818 vs. **0.3869** (4/5 folds) | 0.3561 vs. **0.3613** | 0.4588 vs. **0.4636** | -- | 0.8842 vs. 0.8841 | 0.0586 vs. 0.0614 |
+| **Sync. v3.0 5-Fold CV (25 Scenes, 16 KB, 5B)** | B3-VQ vs. **BorrowedSight v3** | **16,384** | 0.3632 vs. **0.3729** ($p=0.0216$) | 0.3362 vs. **0.3460** ($p=0.0196$) | 0.4535 vs. **0.4635** (5/5 folds) | -- | 0.8809 vs. **0.8830** | 0.0650 vs. 0.0657 |
+| Mini-200 3-Sender (16 KB, seed 0) | B3 vs. **B4** | 16,384 | 0.3067 vs. **0.5814** | -- | 0.1549 vs. **0.6078** | -- | 0.9657 vs. **0.9725** | 0.0184 vs. 0.0222 |
 
 ### Repository Layout
 
 ```text
-├── borrowedsight/      # Core model (TDVF), pure-PyTorch nets, 5B RVQ codec, Morton packer, Lovász/UFE losses
-├── tools/              # Training (v1 & v2.1), sparse cache extraction, 5-fold CV, oracle, stress eval, audits
-├── tests/              # Unit tests: coordinates, ray visibility, 40-bit TX==RX parity, TDVF & 6-check zero-ego audits
+├── borrowedsight/      # Core model (TDVF, SARC, grouped 3x64 VQ, W2C/CF baselines), kinematics (SS-KFW), nets, 5B codec, Morton packer
+├── tools/              # v3 sender/receiver training, 37-model benchmark, 5-fold CV, Phase 5 stress/mechanism/compute eval, V2V4Real audit
+├── tests/              # Unit tests: coordinates, ray visibility, 40-bit K=64 parity, SARC, SS-KFW, W2C/CF, TDVF & 6-check zero-ego audits
 ├── configs/            # YAML configurations for grid, weather (LISA / train jitter), and training
 ├── experiments/        # Experiment registry (registry.csv)
-├── paper/              # Single-file Elsevier LaTeX manuscript (main.tex, references.bib, 300-DPI figures)
+├── paper/              # IEEE Transactions LaTeX manuscript (main.tex, references.bib, 9 publication figures, cover_letter.md)
 ├── business/           # Deployment & V2X integration notes
 └── requirements.txt    # Minimal reproducible dependencies
 ```
@@ -63,33 +70,25 @@ pip install -r requirements.txt
 # 2. Point BorrowedSight to your external dataset/cache directory (kept outside the repo)
 export BORROWEDSIGHT_DATA_ROOT=/path/to/borrowedsight_data   # PowerShell: $env:BORROWEDSIGHT_DATA_ROOT="D:\bs_data\BorrowedSight"
 
-# 3. Run unit tests, 40-bit TX==RX parity, TDVF invariance, and 6-check Zero-Ego audits
+# 3. Run unit tests, 40-bit K=64 TX==RX parity, SARC/SS-KFW/TDVF invariants, and 6-check Zero-Ego audits
 python -m pytest -q
 
-# 4. Run the controlled Mini-200 benchmark
-python -m tools.build_mini200
-python -m tools.train_sender
-python -m tools.extract_sparse_cache
-python -m tools.train_receivers
-python -m tools.phase5_stress
-
-# 5. Run the full 25-scene real OPV2V + Semantic-OPV2V (4LidarSurround) v2.1 pipeline + 5-fold CV
-python -m tools.train_sender_real --epochs 30
-python -m tools.extract_cache_real
-python -m tools.run_v21_full --epochs 20 --batch-size 4 --lr 8e-4
-python -m tools.eval_phase5_v21
-python -m tools.run_5fold_cv_real --folds 5 --epochs 15 --batch-size 4 --lr 8e-4 --budgets 32768 16384
+# 4. Run the full BorrowedSight v3.0 25-scene real OPV2V pipeline + Phase 5 + V2V4Real zero-shot + 5-fold CV
+python -m tools.train_sender_v3 --epochs 35
+python -m tools.extract_cache_real --sender-ckpt sender_opv2v_v3.pt --cache-prefix opv2v_v3
+python -m tools.run_v3_full --epochs 30 --multibw-epochs 35 --batch-size 4 --lr 8e-4 --ufe-w 0.25
+python -m tools.eval_phase5_v3
+python -m tools.eval_v2v4real_zeroshot
+python -m tools.run_5fold_cv_v3 --epochs 20 --batch-size 4 --lr 8e-4 --ufe-w 0.25
 ```
 
 ### Engineering Insights & Lessons Learned
 
-Building a strictly zero-ego, equalized-byte V2X occupancy system exposed five practical pitfalls that directly shaped the final design:
-
-1. **Geometric Shortcut Overfitting & Task-Decoupled Visibility Fusion (TDVF):** Feeding dense `50×50` visibility bit-planes plus `25×25 z_max` directly into the shared semantic U-Net stem dropped training cross-entropy by `4×` yet degraded held-out test mIoU by `-1.39` points (`0.4185 → 0.4046`, collapsing Fence `-10.25` pts and Wall `-5.15` pts) and worsened UFE by `+25.9%`. Routing visibility exclusively into a lightweight late-fusion `tri_head` refinement block (**TDVF**) eliminates this geometric shortcut completely.
-2. **Additive Factorization Beats Un-Detached Residual Subtraction:** Subtracting $\mathbf{E}_{\mathrm{cls}}(c_u)$ before un-detached `ResidualSimVQ` allowed the commitment loss to shrink residuals toward zero and kill `>70%` of codebook prototypes (`usage ~0.28`). Additive reconstruction $\mathbf{E}_{\mathrm{cls}}(c_u) + \mathrm{VQ}_g(q_u^{(1)}, q_u^{(2)})$ preserves `0.73–0.80` utilization and lifts held-out mIoU by `+2.09` points (`0.3976 → 0.4185`) at zero extra wire bits.
-3. **Zero-Waste 40-Bit Packing Makes Stage-2 RVQ Free:** Replacing byte-aligned 8–9 B tokens with lossless 17-bit coordinates (`x:7, y:7, z:3`) plus `4b cls + 6b code1 + 6b code2 + 7b conf = 40 bits (5 B)` eliminates padding waste, packs Stage-2 refinement for free (`-18.8%` UFE vs. Stage-1 only), and raises spatial token capacity by `+54%`.
-4. **100% `50×50` Visibility Fit Inside the Same 512 B Zstd Slot:** Upgrading coarse `20×20 / 25×25` grids to adaptive `50×50` bit-planes (`939 B`) + `25×25 z_max` nibbles (`313 B`) fits `100.0%` of all 4,736 real OPV2V sweeps inside the exact 512 B framing slot (`295–509 B`, mean `433.5 B`, `0%` fallback below `50×50`) at zero extra wire bytes.
-5. **Real-Time Pure-PyTorch Deployment Without Custom CUDA Ops:** Vectorized Morton sorting, bit-packing, GPU quota selection, and cached FP32 backward $\mathrm{SE}(3)$ warping achieve `10.57–11.90 ms` (`84.0–94.6 FPS`) for 1 sender and `34.53–39.19 ms` (`25.5–29.0 FPS`) for 4 simultaneous senders within `170.5 MB` peak VRAM with zero `spconv`/`mmcv` dependencies.
+1. **All 9/9 Orthogonal Ablations Strictly Positive:** Every architectural component—TDVF (`+2.92 pt`), $3\times 64$ grouped codebooks (`+2.55 pt`), 13-scalar SARC (`+2.29 pt`), additive class embeddings (`+1.81 pt`), category quotas (`+1.60 pt`), Warmup+EMA (`+1.02 pt`), free 6-bit $K_{\mathrm{cb}}=64$ (`+0.47 pt`), free Stage-2 residuals (`+0.31 pt`), and the 512 B $50\times 50$ visibility envelope (`+0.28 pt` clean / `+2.19 pt` LISA Fog / `+1.55 pt` 50% Drop)—delivers verified held-out test gains.
+2. **SARC Rescues Thin Vertical Semantics at +13 Parameters:** Even with an 82.6%-accurate Building sender, 2D BEV U-Net smoothing collapsed receiver Building IoU to `0.2130`. Adding 13 bounded classwise logit-skip scalars (`SARC`, 25% training prior dropout) immediately lifted Building IoU by `+18.69 pt` (`0.3999`, 3-seed `0.4338`) at `0` extra wire bytes.
+3. **Zero-Byte SS-KFW Overcomes 500 ms V2X Delay:** Because `c_u == Vehicles` travels explicitly on the wire, receiver-only 8-connected clustering + lag-weighted multi-step velocity estimation boosts 500 ms Vehicle IoU by **`3.49×`** (`0.0571 → 0.1994`) while keeping static buildings/roads untouched.
+4. **Zero-Sync Single-GEMM Grouped Quantization (`6.73×` Speedup):** Replacing per-group Python boolean indexing (`mask.any().item()`) with a single batched matrix multiply eliminated host-device sync stalls with `0.00e+00` numerical drift.
+5. **Real-World V2V4Real 32-Beam Transfer Diagnosis:** Across 2,306 real Los Angeles Velodyne VLP-32C sweeps, adaptive Tier-2 (`50×50` tri-state) fits **100.0%** inside 512 B (`max 475 B ≤ 510 B`, `0.0%` overflow). Zero-shot evaluation also reveals that relaxing the hard `road_cap=0.45` whenever total occupied voxels fall below $N(B)$ (`2,456 < 5,840`) eliminates unnecessary ground-token pruning on sparse 32-beam highways.
 
 ### Citation
 
@@ -97,7 +96,7 @@ Building a strictly zero-ego, equalized-byte V2X occupancy system exposed five p
 @article{wu2026borrowedsight,
   author  = {Wu, Yonghao},
   title   = {BorrowedSight: Category-Geometry Token Communication and Visibility Envelopes for Zero-Ego-Observation Cooperative 3D Semantic Occupancy},
-  journal = {Submitted to Computer Communications},
+  journal = {Submitted to IEEE Transactions},
   year    = {2026}
 }
 ```
@@ -110,26 +109,14 @@ Building a strictly zero-ego, equalized-byte V2X occupancy system exposed five p
 
 **BorrowedSight** 是一个轻量级纯 PyTorch 协同三维语义占据框架，面向**零本车环境传感器**（无本车相机、无激光雷达、无毫米波雷达）的接收车辆，仅依赖本车 6-DoF 位姿、运动状态与受限带宽下的邻车 V2X 报文，即可完成接收端中心三维语义占据与盲区风险估计。
 
-核心亮点：
+核心亮点（v3.0 IEEE Transactions 旗舰版）：
 
-- **严格零本车观测边界与安全回退**：接收端接口严格锁定为 `(ego_pose, timestamp, motion, serialized_packets)`，通过 6 项自动化零泄漏测试；全链路断联时确定性输出 `100% Unknown`（`UFE = 0.0`）。
-- **零浪费 5 字节（40-bit）加法式类别-几何残差量化**：每个锚点压缩为 `17b 无损坐标 + 4b 类别 ID + 6b Stage-1 + 6b Stage-2 + 7b 置信度 = 40 bits`（Stage-2 残差完全免费），解码为 `E_cls(c) + VQ_g(code1, code2)`，`B4-Compact` 仅 `2.34M` 参数（较紧凑 4B 共享 VQ 基线 B3 仅增 `+1,232` 参数 / `+0.053%`）。
-- **抗丢包微块 + 自适应 `50×50` Zstd 包络 + 任务解耦可见性融合（TDVF）**：16-token 独立微块保障 50% 丢包下平滑退化；自适应 `50×50` 位平面 + `25×25 z_max` 在全部 4,736 条真实 OPV2V 扫描中 **100%** 装入原 512 B 槽位（`295–509 B`，均值 `433.5 B`，0 额外字节）；**TDVF** 将包络隔离至三态后融合头，彻底消除共享语义主干的几何捷径过拟合（测试 mIoU `+1.39 pt`、UFE 降 `-20.6%`）。
-- **突破性等字节实测性能与纯 PyTorch 实时推理**：在全量 25 场景多发送车真实 OPV2V 测试集上，32 KB 达 **`0.4255 ± 0.0065` mIoU**（`B4-Compact`）与 **`0.4168 ± 0.0043` mIoU / 车辆 `0.4865` / UFE `0.0364`**（`B4-TDVF`）——**零本车传感器超越已发表 4 相机本车 VQSOP（`0.4154`）**；半带宽 16 KB 达 **`0.4067 ± 0.0093` mIoU**（反超 32 KB 紧凑 B3 `0.4044`）；多预算模型在 **`8 KB (0.66 Mbps)` 达 `0.3702` mIoU**（超越 4 相机本车 CoHFF `0.3416` 达 `+2.86 pt`）；单张 RTX 3090 端到端实测 **1 车 `10.57–11.90 ms (84.0–94.6 FPS)` / 4 车 `34.53–39.19 ms (25.5–29.0 FPS)`**，峰值显存仅 `170.5 MB`。
-
-### 工程踩坑与设计洞察
-
-1. **几何捷径过拟合与 TDVF 解耦**：将高分辨率 `50×50` 包络与 `z_max` 直接拼入共享语义 U-Net 主干会让训练损失大降 `4×`，却令测试集 mIoU 下跌 `-1.39 pt`、UFE 恶化 `+25.9%`；通过 TDVF 将包络后融合隔离至三态分支后，语义泛化与盲区安全同步最大化。
-2. **加法式解耦防止码本坍塌**：在未截断梯度下于量化前减去 `E_cls(c)` 会导致量化承诺损失把残差压向零，令超过 70% 码本原型失效；采用加法融合 `E_cls(c) + VQ_g(code1, code2)` 保持 `0.73–0.80` 码本利用率并稳定提升 `+2.09 pt` mIoU。
-3. **40-bit 零冗余打包实现免费 Stage-2**：无损 17-bit 坐标取代 32-bit 冗余字段，在 5 字节内完整容纳两级残差码与类别锚点，空间锚点容量提升 `+54%`。
-4. **原 512 B 槽位内 100% 实现 `50×50`（0.8 m）包络**：4,736 条真实扫描零回退至 `25×25`，空间单元密度较 `25×25` 提升 `4×`，0 额外线缆字节。
-5. **零自定义算子纯 PyTorch 实时化**：完全摆脱 `spconv`/`mmcv` 编译依赖，单卡实时支持 1–4 车并发解码。
-
-### 快速开始
-
-1. **环境配置**：使用独立 Python 3.12 CUDA 环境安装 `requirements.txt`。
-2. **数据路径设置**：通过环境变量 `BORROWEDSIGHT_DATA_ROOT` 指向外部数据与稀疏缓存目录（避免将大型缓存或下载脚本写入代码仓库）。
-3. **测试与复现**：运行 `python -m pytest -q` 验证全部单元测试、40-bit 紧凑打包无损验证、TDVF 不变性及 6 项零本车泄漏审计，再按英文 Quickstart 步骤复现 Mini-200 或 25 场景真实 OPV2V v2.1 全流程与 5 折交叉验证。
+- **显式 4-bit 线缆语义锚点驱动三大「零额外字节」接收端机制**：每个锚点无冗余打包为 **5 字节（40-bit）** 紧凑记录（`17b 无损坐标 + 4b 类别 ID + 6b Stage-1 + 6b Stage-2 + 7b 置信度`），在总参数量（`2.419M` / `16.71 GFLOPs`）**低于等字节 CodeFilling-Occ（`2.462M` / `17.61 GFLOPs`）**的前提下，同步解锁：
+  1. **加法式 $3\times 64$ 几何分组 ResidualSimVQ**：吃满 6-bit 免费位宽（`K=64`，0 额外可训练参数），Vertical Static 二级残差利用率高达 **98.4%（63/64）**，总活跃原型达 **149/192（77.6%）**。
+  2. **语义锚点残差直连（`SARC`，仅 `+13` 标量参数、0 额外字节）**：将置信度与时效加权的线缆类别投票直接残差注入 3D 语义输出 logits，一举将测试集 Building IoU 拉升 **`+18.69 pt`**（`0.2130 → 0.3999`，3 种子 **`0.4338`**），整体 mIoU 提升 **`+2.29 pt`**。
+  3. **语义选择性运动学前向补偿（`SS-KFW`，0 参数、0 额外字节）**：仅对线缆标签为 `Vehicles` 的动态锚点执行接收端 8 邻域聚类与多步速度估计前向映射，静止背景严格锁定世界 $\mathrm{SE}(3)$ 坐标，**500 ms 高延迟下车辆 IoU 暴涨 `3.49×`**（`0.0571 → 0.1994`，为 CodeFilling-Occ 的 `3.67×`）。
+- **任务解耦可见性融合（TDVF）与全量 9/9 正向正交消融**：固定 512 B 槽位自适应 Zstd `50×50` 包络在 4,736 条真实 OPV2V 扫描与 **2,306 条真实 V2V4Real 32 线实车扫描**中均实现 **100.0% 无溢出封装**；TDVF 彻底消除早融合几何捷径过拟合（`+2.92 pt`），**9 项正交消融全部严格正向增益**。
+- **全面刷新等字节主对比与实车零样本泛化**：25 场景真实 OPV2V 测试集 32 KB 3 种子均值达 **`0.4496 ± 0.0033` mIoU**（前景 Fg-mIoU **`0.4252`**、车辆 **`0.4872`**、建筑 **`0.4338`**），显著超越等字节复现的 `CodeFilling-Occ`（`0.4292 ± 0.0095`，`+2.04 pt` 且方差收紧 `2.9×`）、`B3-VQ`（`0.4185`，`+3.11 pt`）与 `Where2comm-Occ`（`0.3937`，`+5.59 pt`）；半带宽 16 KB 达 **`0.4214`**（车辆 **`0.4914`**、全组最低 UFE **`0.0474`**）；`B4-MultiBW v3` 在 **8 KB（0.66 Mbps）达 `0.3949` mIoU**、**2 KB 达 `0.2886`**（领先 CodeFilling `+17.73 pt`）；实车 V2V4Real 8 KB 零样本全面领跑 Free IoU（`0.5524`）、Unknown F1（`0.7480`）与 3D 车辆框召回率（`0.3632`）。单张 RTX 3090 端到端纯 PyTorch 推理达 **1 车 `12.68 ms (78.8 FPS)` / 4 车 `41.88 ms (23.9 FPS)`**，峰值显存仅 **`137.8 MB`**。
 
 ### 联系作者
 

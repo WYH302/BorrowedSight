@@ -66,9 +66,10 @@ def bev_d4_augment(
     sem_t: torch.Tensor,
     tri_t: torch.Tensor,
     rng: np.random.Generator,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    cls_prior: torch.Tensor | None = None,
+):
     """Exact 8-way D4 symmetry (flips + 90-deg rotations) on ego BEV (X, Y) plane."""
-    # feat: [B, C, X, Y, Z], extra: [B, E, X, Y], sem_t/tri_t: [B, X, Y, Z]
+    # feat: [B, C, X, Y, Z], extra: [B, E, X, Y], sem_t/tri_t: [B, X, Y, Z], cls_prior: [B, N_CLASS, X, Y, Z]
     flip_x = bool(rng.integers(0, 2))
     flip_y = bool(rng.integers(0, 2))
     rot_k = int(rng.integers(0, 4))
@@ -77,14 +78,22 @@ def bev_d4_augment(
         extra = torch.flip(extra, dims=(2,))
         sem_t = torch.flip(sem_t, dims=(1,))
         tri_t = torch.flip(tri_t, dims=(1,))
+        if cls_prior is not None:
+            cls_prior = torch.flip(cls_prior, dims=(2,))
     if flip_y:
         feat = torch.flip(feat, dims=(3,))
         extra = torch.flip(extra, dims=(3,))
         sem_t = torch.flip(sem_t, dims=(2,))
         tri_t = torch.flip(tri_t, dims=(2,))
+        if cls_prior is not None:
+            cls_prior = torch.flip(cls_prior, dims=(3,))
     if rot_k:
         feat = torch.rot90(feat, k=rot_k, dims=(2, 3))
         extra = torch.rot90(extra, k=rot_k, dims=(2, 3))
         sem_t = torch.rot90(sem_t, k=rot_k, dims=(1, 2))
         tri_t = torch.rot90(tri_t, k=rot_k, dims=(1, 2))
+        if cls_prior is not None:
+            cls_prior = torch.rot90(cls_prior, k=rot_k, dims=(2, 3))
+    if cls_prior is not None:
+        return feat.contiguous(), extra.contiguous(), sem_t.contiguous(), tri_t.contiguous(), cls_prior.contiguous()
     return feat.contiguous(), extra.contiguous(), sem_t.contiguous(), tri_t.contiguous()
