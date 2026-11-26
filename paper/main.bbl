@@ -40,6 +40,17 @@ V.~Kilic, D.~Hegde, V.~Sindagi, A.~B. Cooper, M.~A. Foster, and V.~M. Patel,
   European Telecommunications Standards Institute, Tech. Rep. ETSI TS 103 324
   V2.1.1, 2023.
 
+\bibitem{bai2024survey}
+Z.~Bai, G.~Wu, M.~J. Barth, Y.~Liu, E.~A. Sisbot, K.~Oguchi, and Z.~Huang, ``A
+  survey and framework of cooperative perception: From heterogeneous singleton
+  to hierarchical cooperation,'' \emph{IEEE Transactions on Intelligent
+  Transportation Systems}, vol.~25, no.~11, pp. 15\,191--15\,209, 2024.
+
+\bibitem{molina2024reeval}
+A.~Molina-Galan, L.~Lusvarghi, B.~Coll-Perales, J.~Gozalvez, and M.~L. Merani,
+  ``On the impact of re-evaluation in {5G} {NR} {V2X} mode 2,'' \emph{IEEE
+  Transactions on Vehicular Technology}, vol.~73, no.~2, pp. 2669--2683, 2024.
+
 \bibitem{chen2019fcooper}
 Q.~Chen, X.~Ma, S.~Tang, J.~Guo, Q.~Yang, and S.~Fu, ``{F-Cooper}: Feature
   based cooperative perception for autonomous vehicle edge computing system
@@ -57,6 +68,12 @@ R.~Xu, H.~Xiang, Z.~Tu, X.~Xia, M.-H. Yang, and J.~Ma, ``{V2X-ViT}:
   Vehicle-to-everything cooperative perception with vision transformer,'' in
   \emph{Proceedings of the European Conference on Computer Vision (ECCV)},
   2022, pp. 107--124.
+
+\bibitem{xu2025v2xvitv2}
+R.~Xu, C.-J. Chen, Z.~Tu, and M.-H. Yang, ``{V2X-ViTv2}: Improved vision
+  transformers for vehicle-to-everything cooperative perception,'' \emph{IEEE
+  Transactions on Pattern Analysis and Machine Intelligence}, vol.~47, no.~1,
+  pp. 650--662, 2025.
 
 \bibitem{xu2022cobevt}
 R.~Xu, Z.~Tu, H.~Xiang, W.~Shao, B.~Zhou, and J.~Ma, ``{CoBEVT}: Cooperative
@@ -203,16 +220,40 @@ J.~Wang, Z.~Xu, Y.~Zhang, Z.~Jiang, C.~Lu, S.~Yang, Y.~Wang, J.~Zhong,
   cooperative {3D} perception,'' in \emph{Proceedings of the IEEE/CVF
   Conference on Computer Vision and Pattern Recognition (CVPR)}, 2026.
 
-\bibitem{lu2023coalign}
-Y.~Lu, Q.~Li, B.~Liu, M.~Dianati, C.~Feng, S.~Chen, and Y.~Wang, ``Robust
-  collaborative {3D} object detection in presence of pose errors,'' in
-  \emph{Proceedings of the IEEE International Conference on Robotics and
-  Automation (ICRA)}, 2023, pp. 4812--4818.
+\bibitem{fang2025racp}
+Z.~Fang, J.~Wang, Y.~Ma, Y.~Tao, Y.~Deng, X.~Chen, and Y.~Fang, ``{R-ACP}:
+  Real-time adaptive collaborative perception leveraging robust task-oriented
+  communications,'' \emph{IEEE Journal on Selected Areas in Communications},
+  vol.~43, 2025.
+
+\bibitem{dao2024practical}
+M.-Q. Dao, J.~S. Berrio, V.~Fr{\'e}mont, M.~Shan, E.~H{\'e}ry, and S.~Worrall,
+  ``Practical collaborative perception: A framework for asynchronous and
+  multi-agent {3D} object detection,'' \emph{IEEE Transactions on Intelligent
+  Transportation Systems}, vol.~25, no.~9, pp. 12\,163--12\,175, 2024.
 
 \bibitem{lei2022syncnet}
 Z.~Lei, S.~Ren, Y.~Hu, W.~Zhang, and S.~Chen, ``Latency-aware collaborative
   perception,'' in \emph{Proceedings of the European Conference on Computer
   Vision (ECCV)}, 2022, pp. 316--332.
+
+\bibitem{shi2025adaptive}
+J.~Shi, J.~Zhao, L.~Zhuo, X.~Wang, X.~Zhan, and H.~Liu, ``{V2V} cooperative
+  perception with adaptive communication loss for autonomous driving,''
+  \emph{IEEE Transactions on Intelligent Transportation Systems}, vol.~26,
+  no.~10, pp. 14\,866--14\,878, 2025.
+
+\bibitem{lin2025jamming}
+Z.~Lin, L.~Xiao, H.~Chen, Z.~Lv, Y.~Zhu, Y.~Zhang, and Y.-J. Liu,
+  ``Edge-assisted collaborative perception against jamming and interference in
+  vehicular networks,'' \emph{IEEE Transactions on Wireless Communications},
+  vol.~24, no.~1, pp. 860--874, 2025.
+
+\bibitem{lu2023coalign}
+Y.~Lu, Q.~Li, B.~Liu, M.~Dianati, C.~Feng, S.~Chen, and Y.~Wang, ``Robust
+  collaborative {3D} object detection in presence of pose errors,'' in
+  \emph{Proceedings of the IEEE International Conference on Robotics and
+  Automation (ICRA)}, 2023, pp. 4812--4818.
 
 \bibitem{lu2024heal}
 Y.~Lu, Y.~Hu, Y.~Zhong, D.~Wang, Y.~Wang, and S.~Chen, ``{HEAL}: An extensible
@@ -276,6 +317,12 @@ Y.~Huang, W.~Zheng, Y.~Zhang, J.~Zhou, and J.~Lu, ``{GaussianFormer}: Scene as
   \emph{Proceedings of the European Conference on Computer Vision (ECCV)},
   2024, pp. 376--393.
 
+\bibitem{li2026htcl}
+B.~Li, J.~Deng, Y.~Sun, X.~Wang, X.~Jin, and W.~Zeng, ``Hierarchical context
+  alignment with disentangled geometric and temporal modeling for semantic
+  occupancy prediction,'' \emph{IEEE Transactions on Pattern Analysis and
+  Machine Intelligence}, 2026.
+
 \bibitem{lang2019pointpillars}
 A.~H. Lang, S.~Vora, H.~Caesar, L.~Zhou, J.~Yang, and O.~Beijbom,
   ``{PointPillars}: Fast encoders for object detection from point clouds,'' in
@@ -286,6 +333,10 @@ A.~H. Lang, S.~Vora, H.~Caesar, L.~Zhou, J.~Yang, and O.~Beijbom,
 O.~Ronneberger, P.~Fischer, and T.~Brox, ``{U-Net}: Convolutional networks for
   biomedical image segmentation,'' in \emph{Medical Image Computing and
   Computer-Assisted Intervention (MICCAI)}, 2015, pp. 234--241.
+
+\bibitem{gray1998quantization}
+R.~M. Gray and D.~L. Neuhoff, ``Quantization,'' \emph{IEEE Transactions on
+  Information Theory}, vol.~44, no.~6, pp. 2325--2383, 1998.
 
 \bibitem{vandenoord2017vqvae}
 A.~van~den Oord, O.~Vinyals, and K.~Kavukcuoglu, ``Neural discrete
@@ -309,13 +360,13 @@ S.~Z. Zhao, H.~Zhang, Z.~Li, J.~Peng, A.~Chui, Z.~Zhou, Z.~Meng, H.~Xiang,
   \emph{Proceedings of the European Conference on Computer Vision (ECCV)},
   2026.
 
-\bibitem{elfes1989occupancy}
-A.~Elfes, ``Using occupancy grids for mobile robot perception and navigation,''
-  \emph{Computer}, vol.~22, no.~6, pp. 46--57, 1989.
-
 \bibitem{amanatides1987ray}
 J.~Amanatides and A.~Woo, ``A fast voxel traversal algorithm for ray tracing,''
   in \emph{Proceedings of Eurographics}, vol.~87, 1987, pp. 3--10.
+
+\bibitem{elfes1989occupancy}
+A.~Elfes, ``Using occupancy grids for mobile robot perception and navigation,''
+  \emph{Computer}, vol.~22, no.~6, pp. 46--57, 1989.
 
 \bibitem{hornung2013octomap}
 A.~Hornung, K.~M. Wurm, M.~Bennewitz, C.~Stachniss, and W.~Burgard,

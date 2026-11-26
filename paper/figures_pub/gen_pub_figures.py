@@ -50,9 +50,9 @@ SERIES = {
     "Where2comm_v3_32k": {"color": "#D69E2E", "ls": "--", "marker": "v", "label": "Where2comm-Occ"},
     "B3_v3_32k": {"color": "#1D4E89", "ls": "-", "marker": "o", "label": "B3 (VQ 5B)"},
     "CodeFilling_v3_32k": {"color": "#6B46C1", "ls": "-.", "marker": "s", "label": "CodeFilling-Occ"},
-    "B4_v3_32k": {"color": "#8B2635", "ls": "-", "marker": "P", "label": "BorrowedSight v3"},
-    "B4_v3_32k_no_env": {"color": "#C85A17", "ls": "--", "marker": "X", "label": "B4 w/o Env."},
-    "B4_v3_multibw": {"color": "#0B7285", "ls": "-", "marker": "*", "label": "B4-MultiBW v3"},
+    "B4_v3_32k": {"color": "#8B2635", "ls": "-", "marker": "P", "label": "BorrowedSight"},
+    "B4_v3_32k_no_env": {"color": "#C85A17", "ls": "--", "marker": "X", "label": "Ours w/o Env."},
+    "B4_v3_multibw": {"color": "#0B7285", "ls": "-", "marker": "*", "label": "BS-MultiBW"},
     "B3": {"color": "#1D4E89", "ls": "-", "marker": "o", "label": "B3 (Shared VQ)"},
     "B4": {"color": "#8B2635", "ls": "-", "marker": "P", "label": "B4 (BorrowedSight)"},
 }
@@ -166,7 +166,7 @@ def draw_fig3_main_comparison() -> None:
     tags_32 = ["B0_v3_32k", "B1_v3_32k", "Where2comm_v3_32k", "B2_v3_32k", "B3_v3_32k", "CodeFilling_v3_32k", "B4_v3_32k"]
     tags_16 = ["B0_v3_32k", "B1_v3_16k", "Where2comm_v3_16k", "B2_v3_16k", "B3_v3_16k", "CodeFilling_v3_16k", "B4_v3_16k"]
     keys_p = ["B0", "B1", "Where2comm", "B2", "B3", "CodeFilling", "B4-v3"]
-    xticks = ["B0", "B1", "W2C-\nOcc", "B2", "B3-\nVQ", "CF-\nOcc", "Ours\n(v3)"]
+    xticks = ["B0", "B1", "W2C-\nOcc", "B2", "B3-\nVQ", "CF-\nOcc", "Ours"]
     hatches = ["", "//", "oo", "\\\\", "xx", "..", "++"]
 
     fig, axes = plt.subplots(2, 3, figsize=(10.2, 5.4), constrained_layout=True)
@@ -281,7 +281,7 @@ def draw_fig5_robustness() -> None:
         ("B3_v3_32k", "B3-VQ", "#1D4E89"),
         ("CodeFilling_v3_32k", "CF-Occ", "#6B46C1"),
         ("B4_v3_32k_no_env", "B4 w/o Env", "#C85A17"),
-        ("B4_v3_32k", "Ours (v3)", "#8B2635"),
+        ("B4_v3_32k", "Ours", "#8B2635"),
     ]
     wx = np.arange(3)
     w = 0.16
@@ -371,7 +371,7 @@ def draw_fig5_robustness() -> None:
     ax = axes[1, 2]
     cx = np.arange(2)
     wc = 0.24
-    for bi, (tag, lbl, col) in enumerate((("B3_v3_32k", "B3-VQ", "#1D4E89"), ("CodeFilling_v3_32k", "CF-Occ", "#6B46C1"), ("B4_v3_32k", "Ours (v3)", "#8B2635"))):
+    for bi, (tag, lbl, col) in enumerate((("B3_v3_32k", "B3-VQ", "#1D4E89"), ("CodeFilling_v3_32k", "CF-Occ", "#6B46C1"), ("B4_v3_32k", "Ours", "#8B2635"))):
         vals = [
             float(next(r for r in p5 if r["family"] == "congestion" and r["model"] == tag and r["level"] == "le2_veh")["mIoU"]),
             float(next(r for r in p5 if r["family"] == "congestion" and r["model"] == tag and r["level"] == "ge4_veh")["mIoU"]),
@@ -414,7 +414,7 @@ def draw_real_qualitative_figures() -> None:
         ("(c) Where2comm-Occ", blob["w2c_sem"], blob["w2c_tri"]),
         ("(d) CodeFilling-Occ", blob["cf_sem"], blob["cf_tri"]),
         ("(e) B3-VQ (5B)", blob["b3_sem"], blob["b3_tri"]),
-        ("(f) BorrowedSight v3", blob["b4_sem"], blob["b4_tri"]),
+        ("(f) BorrowedSight", blob["b4_sem"], blob["b4_tri"]),
     ]
     for ax, (cap, s, t) in zip(axes, panels6):
         ax.imshow(sem_tri_to_rgb(s, t), origin="lower", interpolation="nearest")
@@ -430,7 +430,7 @@ def draw_real_qualitative_figures() -> None:
 
     fig, axes = plt.subplots(1, 5, figsize=(10.4, 2.50), constrained_layout=True)
     panels7 = [
-        ("(a) Ours (v3) Clear", blob["b4_sem"], blob["b4_tri"]),
+        ("(a) BorrowedSight Clear", blob["b4_sem"], blob["b4_tri"]),
         ("(b) LISA Fog", blob["b4_fog_sem"], blob["b4_fog_tri"]),
         ("(c) LISA Rain (Clutter)", blob["b4_rain_sem"], blob["b4_rain_tri"]),
         ("(d) 50% Block Drop", blob["b4_drop50_sem"], blob["b4_drop50_tri"]),
@@ -568,8 +568,8 @@ def draw_fig9_v2v4real() -> None:
         ("Where2comm_v3_32k", "W2C-Occ", "#D69E2E"),
         ("B3_v3_32k", "B3-VQ", "#1D4E89"),
         ("CodeFilling_v3_32k", "CF-Occ", "#6B46C1"),
-        ("B4_v3_32k", "Ours (v3)", "#8B2635"),
-        ("B4_v3_multibw", "B4-MultiBW", "#0B7285"),
+        ("B4_v3_32k", "Ours", "#8B2635"),
+        ("B4_v3_multibw", "BS-MultiBW", "#0B7285"),
     ]
     mets = [("free_IoU", "Free IoU $\\uparrow$"), ("unknown_F1", "Unk. F1 $\\uparrow$"), ("veh_box_sem_recall", "3D Veh. Rec. $\\uparrow$")]
     mx = np.arange(len(mets))
